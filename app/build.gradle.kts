@@ -44,6 +44,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.androidx.foundation)
     // -------------------------------------------------------------------------
     // COMPOSE BOM
     val composeBom = platform(libs.androidx.compose.bom)
@@ -75,6 +76,7 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     debugImplementation(libs.androidx.ui.tooling)
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.ui:ui-text:1.6.8")
 
     // 💡 CRITICAL ADDITION: Input Method (Keyboard) Dependencies
     implementation("androidx.core:core:1.12.0")

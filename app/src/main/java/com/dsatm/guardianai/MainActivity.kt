@@ -1,5 +1,3 @@
-// file: src/main/java/com/dsatm/guardianai/MainActivity.kt
-
 package com.dsatm.guardianai
 
 import android.os.Bundle
@@ -8,52 +6,38 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.TextFields
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.navigation.NavDestination.Companion.hierarchy
-import androidx.navigation.NavHostController
+import androidx.fragment.app.FragmentActivity
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.dsatm.audio_redaction.ui.AudioRedactionScreen
+import androidx.navigation.navArgument
 import com.dsatm.guardianai.security.SecurityManager
+import com.dsatm.guardianai.ui.Screen
+import com.dsatm.guardianai.ui.screens.FileExplorerScreen
+import com.dsatm.guardianai.ui.screens.HomeScreen
+import com.dsatm.guardianai.ui.screens.SearchScreen // NEW IMPORT
 import com.dsatm.guardianai.ui.theme.GuardianAITheme
-import com.dsatm.image_redaction.ui.ImageRedactionScreen
-import com.dsatm.text_redaction.ui.TextRedactionScreen
-import androidx.fragment.app.FragmentActivity
-import com.dsatm.guardianai.ui.screens.CryptoDemoScreen
 
-// Sealed class to define our navigation destinations in a type-safe way.
-sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
-    object Image : Screen("image_screen", "Image", Icons.Default.Image)
-    object Audio : Screen("audio_screen", "Audio", Icons.Default.Mic)
-    object Text : Screen("text_screen", "Text", Icons.Default.TextFields)
-    object Crypto : Screen("crypto_screen", "Crypto", Icons.Default.Lock)
-}
-
+/**
+ * Main application entry point handling initial Biometric authentication.
+ */
 class MainActivity : FragmentActivity() {
 
     private lateinit var securityManager: SecurityManager
+    // State to track if authentication has succeeded
     private var isAuthenticated by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,15 +48,18 @@ class MainActivity : FragmentActivity() {
         if (securityManager.isBiometricReady()) {
             performBiometricAuth()
         } else {
-            // If biometrics are not available, grant access by default.
+            // Fallback: If biometrics are not available, grant access by default.
             isAuthenticated = true
+            Toast.makeText(this, "Biometrics not set up. Access granted.", Toast.LENGTH_SHORT).show()
         }
 
         setContent {
             GuardianAITheme {
                 if (isAuthenticated) {
+                    // Show the main content once authenticated
                     MainScreen()
                 } else {
+                    // Show the splash screen during authentication
                     SplashScreen()
                 }
             }
@@ -91,73 +78,69 @@ class MainActivity : FragmentActivity() {
                 // Authentication failed, show a message and close the app
                 isAuthenticated = false
                 Toast.makeText(this, "Authentication failed: $errorMessage", Toast.LENGTH_LONG).show()
-                finish() // Close the activity
+                finish() // Close the activity to prevent unauthorized access
             }
         )
     }
 }
 
+/**
+ * Main application screen launched after successful authentication, now hosting the NavHost.
+ */
 @Composable
 fun MainScreen() {
     val navController = rememberNavController()
+    val activity = LocalContext.current as FragmentActivity
 
-    Scaffold(
-        bottomBar = {
-            BottomNavigationBar(navController)
-        }
-    ) { innerPadding ->
+    Scaffold { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Image.route,
+            startDestination = Screen.Home.route, // Start at the Home screen
             modifier = Modifier.padding(innerPadding)
         ) {
-            composable(Screen.Image.route) {
-                ImageRedactionScreen()
+            // 1. Home Screen (Dashboard/Main Menu)
+            composable(Screen.Home.route) {
+                HomeScreen(navController = navController)
             }
-            composable(Screen.Audio.route) {
-                AudioRedactionScreen()
-            }
-            composable(Screen.Text.route) {
-                TextRedactionScreen()
-            }
-            composable(Screen.Crypto.route) {
-                CryptoDemoScreen(activity = LocalContext.current as FragmentActivity)
-            }
-        }
-    }
-}
 
-@Composable
-fun BottomNavigationBar(navController: NavHostController) {
-    // List of screens to show in the navigation bar.
-    val items = listOf(Screen.Image, Screen.Audio, Screen.Text, Screen.Crypto)
+            // 2. File Explorer Screen (Accepts a path argument)
+            composable(
+                route = Screen.Explorer.route,
+                arguments = listOf(navArgument("path") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val encodedPath = backStackEntry.arguments?.getString("path") ?: ""
+                FileExplorerScreen(
+                    navController = navController,
+                    activity = activity,
+                    encodedPath = encodedPath
+                )
+            }
 
-    // Get the current back stack entry to highlight the selected item.
-    val navBackStackEntry by navController.currentBackStackEntryAsState()
-    val currentDestination = navBackStackEntry?.destination
+            // 3. Search Screen
+            composable(Screen.Search.route) {
+                SearchScreen(navController = navController)
+            }
 
-    NavigationBar {
-        items.forEach { screen ->
-            val isSelected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
-            NavigationBarItem(
-                icon = {
-                    Icon(
-                        imageVector = screen.icon,
-                        contentDescription = screen.label
-                    )
-                },
-                label = { Text(screen.label) },
-                selected = isSelected,
-                onClick = {
-                    navController.navigate(screen.route) {
-                        popUpTo(navController.graph.startDestinationId) {
-                            saveState = true
-                        }
-                        launchSingleTop = true
-                        restoreState = true
-                    }
+            // 4. Placeholder for Settings
+            composable(Screen.Settings.route) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Settings Screen", style = MaterialTheme.typography.headlineLarge)
                 }
-            )
+            }
+
+            // 5. Placeholder for Tools
+            composable(Screen.Tools.route) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Tools Screen", style = MaterialTheme.typography.headlineLarge)
+                }
+            }
+
+            // 6. Placeholder for Redacted Files
+            composable(Screen.Redacted.route) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Redacted Files Screen", style = MaterialTheme.typography.headlineLarge)
+                }
+            }
         }
     }
 }
