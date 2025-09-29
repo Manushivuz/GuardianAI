@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -21,33 +20,38 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import com.dsatm.guardianai.security.EncryptedFileService
+import com.dsatm.guardianai.security.FileManagementService
 import com.dsatm.guardianai.security.SecurityManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
+import java.io.IOException
 
 // Tag for logging messages in Logcat
 private const val TAG = "CryptoDemoScreen"
 
 @Composable
 fun CryptoDemoScreen(activity: FragmentActivity) {
-    // Instantiate the services. The MasterKey is generated on the first access.
     val context: Context = LocalContext.current
     val securityManager = remember { SecurityManager(context) }
+    // Initialize EncryptedFileService using the MasterKey from SecurityManager
     val encryptedFileService = remember { EncryptedFileService(context, securityManager.masterKey) }
+    // Initialize the new FileManagementService, passing the EncryptedFileService
+    val fileManagementService = remember { FileManagementService(context, encryptedFileService) }
 
     // State for managing UI text and status updates
-    var statusText by remember { mutableStateOf("Ready to encrypt/decrypt files.") }
+    var statusText by remember { mutableStateOf("Ready to process files.") }
     var encryptedFile by remember { mutableStateOf<File?>(null) }
     var originalFileName by remember { mutableStateOf<String?>(null) }
+
+    // State for data that needs permission check before saving
     var decryptedDataForSave by remember { mutableStateOf<ByteArray?>(null) }
     var decryptedFileNameForSave by remember { mutableStateOf<String?>(null) }
 
     val coroutineScope = rememberCoroutineScope()
 
-    // Launcher for requesting storage permissions
+    // Launcher for requesting storage permissions (used before saving decrypted data to public storage)
     val requestPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
@@ -57,7 +61,8 @@ fun CryptoDemoScreen(activity: FragmentActivity) {
                 decryptedFileNameForSave?.let { name ->
                     coroutineScope.launch(Dispatchers.IO) {
                         try {
-                            saveByteArrayToExternalStorage(context, data, name)
+                            // Use the core service to save the file
+                            fileManagementService.saveRedactedFile(name, data)
                             statusText = "File saved to Downloads as '$name'."
                             Log.d(TAG, "Successfully saved decrypted file to external storage.")
                         } catch (e: Exception) {
@@ -84,27 +89,43 @@ fun CryptoDemoScreen(activity: FragmentActivity) {
             Log.d(TAG, "File picker result received for encryption. Uri: $uri")
             if (uri != null) {
                 coroutineScope.launch {
-                    statusText = "Encrypting file... Please authenticate."
+                    statusText = "Processing file... Please wait."
                     withContext(Dispatchers.IO) {
                         try {
                             val name = getFileName(context, uri)
-                            val nameForEncryptedFile = "$name.encrypted"
+                            val nameForEncryptedFile = "$name.enc" // Simplified name for internal file
+
                             Log.d(TAG, "Selected file: $name. Encrypted file name will be: $nameForEncryptedFile")
 
-                            // Use the service to encrypt the file's contents and save it to app's internal storage
-                            // The service method will now save to a subfolder
-                            val encrypted = encryptedFileService.encryptFile(uri, nameForEncryptedFile)
+                            // Use the new FileManagementService to handle reading and encrypting in one step.
+                            // The returned 'originalData' would be passed to your redaction modules later.
+                            val originalData = fileManagementService.processAndEncryptOriginalFile(
+                                sourceUri = uri,
+                                originalFileName = nameForEncryptedFile
+                            )
+
+                            // *** IMPORTANT: This is where you would call your Redaction Modules ***
+                            // val redactedData = imageRedactionModule.redact(originalData)
+                            // fileManagementService.saveRedactedFile("$name.redacted", redactedData)
+
+                            // For this demo, we skip redaction and just complete the encryption process.
 
                             // Store the File object and original name for later decryption
-                            encryptedFile = encrypted
-                            originalFileName = name
+                            // Note: You must retrieve the File object from the internal storage path later,
+                            // but for this simple demo, we'll construct the File path explicitly.
+                            val savedInternalFile = File(context.filesDir, nameForEncryptedFile)
+                            encryptedFile = savedInternalFile
+                            originalFileName = name // The original, unencrypted file name
 
-                            statusText = "File '$name' encrypted and saved to app's private storage at: ${encrypted.absolutePath}"
-                            Log.d(TAG, "Encryption complete. File object stored for decryption: ${encryptedFile?.absolutePath}")
+                            statusText = "File '$name' encrypted and saved to app's private storage."
+                            Log.d(TAG, "Encryption complete. Encrypted file stored at: ${encryptedFile?.absolutePath}")
+
+                        } catch (e: IOException) {
+                            statusText = "File processing failed: ${e.message}"
+                            Log.e(TAG, "File processing failed due to IO Exception", e)
                         } catch (e: Exception) {
-                            statusText = "Encryption failed: ${e.message}"
-                            Log.e(TAG, "Encryption failed", e)
-                            e.printStackTrace()
+                            statusText = "File processing failed: ${e.message}"
+                            Log.e(TAG, "File processing failed", e)
                         }
                     }
                 }
@@ -128,7 +149,7 @@ fun CryptoDemoScreen(activity: FragmentActivity) {
             onClick = { encryptFileLauncher.launch("*/*") },
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(text = "Select File to Encrypt")
+            Text(text = "1. Select File (Encrypt & Save Original)")
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -138,25 +159,27 @@ fun CryptoDemoScreen(activity: FragmentActivity) {
                 encryptedFile?.let { file ->
                     Log.d(TAG, "Decrypt button clicked. Encrypted file path: ${file.absolutePath}")
                     coroutineScope.launch {
-                        statusText = "Decrypting file... Please authenticate."
+                        statusText = "Decrypting file... Please wait."
                         withContext(Dispatchers.IO) {
                             try {
                                 val decryptedFileName = originalFileName ?: "decrypted_file"
-                                Log.d(TAG, "Starting decryption of file: ${file.name}. Decrypted name will be: $decryptedFileName")
 
-                                // Decrypt the file, which now returns a ByteArray
-                                val decryptedData = encryptedFileService.decryptFile(file)
+                                // Use the FileManagementService to decrypt the file
+                                val decryptedData = fileManagementService.decryptAndAccessOriginalFile(file)
 
                                 // Store the data and file name in state for the permission launcher callback
                                 decryptedDataForSave = decryptedData
-                                decryptedFileNameForSave = decryptedFileName
+                                decryptedFileNameForSave = "DECRYPTED_$decryptedFileName" // Prepend to avoid overwriting
 
                                 // Check for permissions before saving
+                                // WRITE_EXTERNAL_STORAGE is required on older APIs (pre-Q) to write to Downloads
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q || ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
                                     Log.d(TAG, "Permissions already granted or not needed. Saving file directly.")
-                                    // Save the decrypted data to external storage
-                                    saveByteArrayToExternalStorage(context, decryptedData, decryptedFileName)
-                                    statusText = "File '${file.name}' decrypted and saved to Downloads as '$decryptedFileName'."
+
+                                    // Use the core service to save the decrypted data to external storage
+                                    fileManagementService.saveRedactedFile(decryptedFileNameForSave!!, decryptedDataForSave!!)
+
+                                    statusText = "File '${file.name}' decrypted and saved to Downloads as '${decryptedFileNameForSave}'."
                                     decryptedDataForSave = null
                                     decryptedFileNameForSave = null
                                 } else {
@@ -170,7 +193,6 @@ fun CryptoDemoScreen(activity: FragmentActivity) {
                             } catch (e: Exception) {
                                 statusText = "Decryption failed: ${e.message}"
                                 Log.e(TAG, "Decryption failed", e)
-                                e.printStackTrace()
                             }
                         }
                     }
@@ -182,13 +204,13 @@ fun CryptoDemoScreen(activity: FragmentActivity) {
             enabled = encryptedFile != null,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(text = "Decrypt File")
+            Text(text = "2. Decrypt & Save Original to Downloads")
         }
     }
 }
 
 /**
- * A utility function to get the file name from a Uri.
+ * A utility function to get the file name from a Uri. (Kept for resolving original file name)
  */
 private fun getFileName(context: Context, uri: Uri): String {
     Log.d(TAG, "Attempting to get file name from Uri: $uri")
@@ -210,24 +232,4 @@ private fun getFileName(context: Context, uri: Uri): String {
     val finalName = result ?: "unnamed_file"
     Log.d(TAG, "Resolved file name: $finalName")
     return finalName
-}
-
-/**
- * A utility function to save a byte array to the device's public Downloads directory.
- */
-private fun saveByteArrayToExternalStorage(context: Context, data: ByteArray, newFileName: String) {
-    Log.d(TAG, "Starting to save decrypted byte array to external storage: $newFileName")
-    // Get the directory for the user's public downloads and create a "decrypted" subfolder
-    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-    val decryptedDir = File(downloadsDir, "decrypted")
-    if (!decryptedDir.exists()) {
-        decryptedDir.mkdirs()
-    }
-    val outputFile = File(decryptedDir, newFileName)
-
-    // Write the byte array to the public file
-    FileOutputStream(outputFile).use { output ->
-        output.write(data)
-    }
-    Log.d(TAG, "Successfully saved file to external storage at: ${outputFile.absolutePath}")
 }

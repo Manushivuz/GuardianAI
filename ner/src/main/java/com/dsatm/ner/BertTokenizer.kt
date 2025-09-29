@@ -2,181 +2,142 @@ package com.dsatm.ner
 
 import android.content.Context
 import android.util.Log
-import java.io.InputStream
-import java.util.Locale
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.util.LinkedList
 
 /**
- * Handles the pre-processing (tokenization) for the MobileBERT model.
- *
- * This class is responsible for loading the vocabulary and tokenizer configuration,
- * and converting raw text into the numerical tensors required by the ONNX model.
- *
- * @param context The Android context used to access the assets directory.
+ * Handles tokenization for BERT-style models.
+ * Assumes a standard WordPiece tokenizer with a vocab.txt file.
  */
 class BertTokenizer(private val context: Context) {
 
-    // Tag for logging in Logcat
     private val TAG = "BertTokenizer"
-
-    // The vocabulary map, mapping a token string to its ID
-    private lateinit var vocab: Map<String, Int>
-
-    // Special token IDs, which are necessary for the model to understand
-    private var clsTokenId: Int = -1
-    private var sepTokenId: Int = -1
-    private var unkTokenId: Int = -1
-    private var padTokenId: Int = -1
-
-    // The maximum sequence length the model can handle
-    private val maxSequenceLength = 128
+    private lateinit var vocab: Map<String, Long> // Map token string to ID
 
     /**
-     * Initializes the tokenizer by loading the vocabulary and special tokens.
-     * This method should be called once before performing any tokenization.
+     * Initializes the tokenizer by loading the vocabulary file.
      */
     fun initialize() {
         Log.d(TAG, "Initializing tokenizer...")
-        try {
-            // Load the vocabulary from the assets file
-            val vocabInputStream = context.assets.open("vocab.txt")
-            vocab = loadVocab(vocabInputStream)
-            Log.d(TAG, "Vocab loaded. Total tokens: ${vocab.size}")
-
-            // Get the IDs for the special tokens
-            clsTokenId = vocab["[CLS]"] ?: throw IllegalStateException("Missing [CLS] token in vocab.txt")
-            sepTokenId = vocab["[SEP]"] ?: throw IllegalStateException("Missing [SEP] token in vocab.txt")
-            unkTokenId = vocab["[UNK]"] ?: throw IllegalStateException("Missing [UNK] token in vocab.txt")
-            padTokenId = vocab["[PAD]"] ?: 0 // Use 0 as a default if not found
-            Log.d(TAG, "Special token IDs found: CLS=$clsTokenId, SEP=$sepTokenId, UNK=$unkTokenId, PAD=$padTokenId")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize tokenizer.", e)
-            throw e // Re-throw to indicate a critical failure
-        }
+        vocab = loadVocab()
+        Log.d(TAG, "Vocab loaded. Size: ${vocab.size}")
     }
 
     /**
-     * Converts a raw text string into a numerical format for the model.
-     *
-     * This function performs the following steps:
-     * 1. Tokenizes the text into sub-words.
-     * 2. Maps each sub-word to its vocabulary ID.
-     * 3. Adds special tokens like [CLS] and [SEP].
-     * 4. Pads or truncates the sequence to the maximum length (128).
-     * 5. Creates the attention mask and token type IDs.
-     *
-     * @param text The input string to tokenize.
-     * @return A [TokenizedInput] data class containing the numerical arrays.
+     * Converts a raw text string into the necessary numerical inputs for the BERT model.
+     * This implementation includes logic to map tokens back to original string indices.
      */
     fun tokenize(text: String): TokenizedInput {
         if (!::vocab.isInitialized) {
-            throw IllegalStateException("Tokenizer has not been initialized. Call initialize() first.")
+            throw IllegalStateException("Tokenizer not initialized. Call initialize() first.")
         }
-        Log.d(TAG, "Tokenizing text: '$text'")
 
-        val tokens = mutableListOf<String>()
-        val inputIds = mutableListOf<Long>()
-        val attentionMask = mutableListOf<Long>()
-        val tokenTypeIds = mutableListOf<Long>()
+        // 1. Initial segmentation of the original text by whitespace
+        val words = text.split(Regex("\\s+")).filter { it.isNotEmpty() }
 
-        // 1. Add the CLS token at the beginning
-        tokens.add("[CLS]")
-        inputIds.add(clsTokenId.toLong())
-        attentionMask.add(1L)
-        tokenTypeIds.add(0L)
+        // Lists to store the final output (including [CLS] and [SEP])
+        val finalTokens = LinkedList<String>()
+        val finalInputIds = LinkedList<Long>()
+        val tokenToOriginalTextMap = LinkedList<Pair<Int, Int>>()
 
-        // 2. Tokenize the input text, splitting by spaces and handling punctuation
-        val words = text.split(Regex("\\s+")).filter { it.isNotBlank() }
+        // Add [CLS] token
+        finalTokens.add("[CLS]")
+        finalInputIds.add(vocab.getOrElse("[CLS]") { 101L })
+        tokenToOriginalTextMap.add(Pair(0, 0))
+
+        // Track character position in the original text
+        var currentCharIndex = 0
+
+        // 2. Tokenize each word and track indices
         for (word in words) {
-            // A simple sub-word tokenization approach that works for this model.
-            // A more complex implementation would use the tokenizer.json file.
-            val subwords = splitIntoSubwords(word.toLowerCase(Locale.ROOT))
-            for (subword in subwords) {
-                // Check if the current list of input IDs is at the max length minus 1 for SEP token.
-                if (inputIds.size >= maxSequenceLength - 1) {
-                    Log.w(TAG, "Max sequence length reached. Truncating text.")
-                    break
+            val startOfWordInOriginalText = text.indexOf(word, startIndex = currentCharIndex)
+
+            if (startOfWordInOriginalText == -1) {
+                currentCharIndex = text.length
+                continue
+            }
+
+            var tokenStart = startOfWordInOriginalText
+
+            var subWordIndex = 0
+            while (subWordIndex < word.length) {
+                var isFound = false
+                var end = word.length
+                var currToken = ""
+
+                while (subWordIndex < end) {
+                    var sub = word.substring(subWordIndex, end)
+                    if (subWordIndex > 0) {
+                        sub = "##$sub"
+                    }
+                    if (vocab.containsKey(sub)) {
+                        currToken = sub
+                        isFound = true
+                        break
+                    }
+                    end--
                 }
 
-                // Get the ID for the subword, or use the UNK token ID if not found
-                val subwordId = vocab[subword] ?: unkTokenId
+                if (!isFound) {
+                    currToken = "[UNK]"
+                    end = subWordIndex + 1
+                }
 
-                tokens.add(subword)
-                inputIds.add(subwordId.toLong())
-                attentionMask.add(1L)
-                tokenTypeIds.add(0L)
+                finalTokens.add(currToken)
+                finalInputIds.add(vocab.getOrElse(currToken) { 100L })
+
+                val originalTokenLength = if (currToken.startsWith("##")) {
+                    currToken.substring(2).length
+                } else {
+                    currToken.length
+                }
+
+                val tokenEnd = tokenStart + originalTokenLength
+                tokenToOriginalTextMap.add(Pair(tokenStart, tokenEnd))
+
+                subWordIndex = end
+                tokenStart = tokenEnd
             }
-            if (inputIds.size >= maxSequenceLength - 1) break
+
+            currentCharIndex = startOfWordInOriginalText + word.length
         }
 
-        // 3. Add the SEP token at the end
-        if (inputIds.size < maxSequenceLength) {
-            tokens.add("[SEP]")
-            inputIds.add(sepTokenId.toLong())
-            attentionMask.add(1L)
-            tokenTypeIds.add(0L)
-        }
+        // Add [SEP] token
+        finalTokens.add("[SEP]")
+        finalInputIds.add(vocab.getOrElse("[SEP]") { 102L })
+        tokenToOriginalTextMap.add(Pair(text.length, text.length))
 
-        // 4. Pad the sequence to the max length with 0s
-        while (inputIds.size < maxSequenceLength) {
-            inputIds.add(padTokenId.toLong())
-            attentionMask.add(0L)
-            tokenTypeIds.add(0L)
-        }
-
-        Log.d(TAG, "Tokenization complete. Sequence length: ${inputIds.size}")
-        Log.d(TAG, "Input IDs: ${inputIds.take(10)}...")
-        Log.d(TAG, "Tokens: ${tokens.take(10)}...")
-
+        // Create the TokenizedInput object
         return TokenizedInput(
-            tokens = tokens.toList(),
-            inputIds = inputIds.toLongArray(),
-            attentionMask = attentionMask.toLongArray(),
-            tokenTypeIds = tokenTypeIds.toLongArray()
+            inputIds = finalInputIds.toLongArray(),
+            attentionMask = LongArray(finalInputIds.size) { 1L },
+            tokenTypeIds = LongArray(finalInputIds.size) { 0L },
+            tokens = finalTokens.toList(),
+            tokenToOriginalTextMap = tokenToOriginalTextMap.toList()
         )
     }
 
-    /**
-     * Loads the vocabulary file from assets into a map.
-     */
-    private fun loadVocab(inputStream: InputStream): Map<String, Int> {
-        val vocab = mutableMapOf<String, Int>()
-        inputStream.bufferedReader().useLines { lines ->
-            lines.forEachIndexed { index, line ->
-                vocab[line] = index
-            }
-        }
-        return vocab
-    }
-
-    /**
-     * A simple function to split words into sub-words based on a pre-trained vocabulary.
-     * This is a simplified approach to replicate the MobileBertTokenizer.
-     * For example, "tokenization" might become "token" and "##ization".
-     *
-     * In a production app, a dedicated tokenizer library would be used to parse tokenizer.json.
-     * For this guide, this logic is sufficient to demonstrate the concept.
-     */
-    private fun splitIntoSubwords(word: String): List<String> {
-        val subwords = mutableListOf<String>()
-        var remainingWord = word
-        while (remainingWord.isNotEmpty()) {
-            var found = false
-            for (i in remainingWord.length downTo 1) {
-                val candidate = remainingWord.substring(0, i)
-                if (vocab.containsKey(candidate)) {
-                    subwords.add(candidate)
-                    remainingWord = remainingWord.substring(i)
-                    found = true
-                    break
+    private fun loadVocab(): Map<String, Long> {
+        val vocabMap = mutableMapOf<String, Long>()
+        var index = 0L
+        try {
+            context.assets.open("vocab.txt").use { inputStream ->
+                BufferedReader(InputStreamReader(inputStream)).use { reader ->
+                    reader.forEachLine { line ->
+                        if (line.isNotEmpty()) {
+                            vocabMap[line.trim()] = index++
+                        }
+                    }
                 }
             }
-            // If we didn't find a valid subword, treat the first character as an unknown token
-            if (!found) {
-                val firstChar = remainingWord.substring(0, 1)
-                subwords.add(firstChar)
-                remainingWord = remainingWord.substring(1)
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading vocab.txt", e)
+            vocabMap.putIfAbsent("[CLS]", 101L)
+            vocabMap.putIfAbsent("[SEP]", 102L)
+            vocabMap.putIfAbsent("[UNK]", 100L)
+            vocabMap.putIfAbsent("[PAD]", 0L)
         }
-        return subwords
+        return vocabMap
     }
 }

@@ -1,12 +1,12 @@
+// file: core/src/main/java/com/dsatm/guardianai/security/EncryptedFileService.kt
 package com.dsatm.guardianai.security
 
 import android.content.Context
-import android.net.Uri
 import android.util.Log
 import androidx.security.crypto.EncryptedFile
 import androidx.security.crypto.MasterKey
 import java.io.File
-import java.nio.charset.StandardCharsets
+import java.io.IOException
 
 /**
  * A service class for handling file encryption and decryption using AndroidX Security Crypto.
@@ -16,7 +16,6 @@ class EncryptedFileService(
     private val context: Context,
     private val masterKey: MasterKey
 ) {
-
     // Tag for logging messages
     private val TAG = "EncryptedFileService"
 
@@ -31,29 +30,25 @@ class EncryptedFileService(
     }
 
     /**
-     * Encrypts a file selected via a Uri and saves it to a new, encrypted file in the app's private internal storage.
-     * @param sourceUri The Uri of the file to be encrypted.
+     * Encrypts the provided byte array and saves it to a new, encrypted file
+     * in the app's private internal storage.
+     * @param dataToEncrypt The byte array to be encrypted.
      * @param encryptedFileName The desired name of the output file.
      * @return The File object of the newly created encrypted file.
      */
-    fun encryptFile(sourceUri: Uri, encryptedFileName: String): File {
-        Log.d(TAG, "Attempting to encrypt file from Uri: $sourceUri")
-        // Read the raw bytes from the source Uri
-        val dataToEncrypt = context.contentResolver.openInputStream(sourceUri)?.use { inputStream ->
-            inputStream.readBytes()
-        } ?: throw Exception("Could not read from source Uri.")
-        Log.d(TAG, "Read ${dataToEncrypt.size} bytes from source Uri.")
+    fun encryptAndSaveFile(dataToEncrypt: ByteArray, encryptedFileName: String): File {
+        Log.d(TAG, "Attempting to encrypt and save file: $encryptedFileName")
 
-        // Use the EncryptedFile API to encrypt the bytes and write them to a new file in private storage
         val targetFile = File(context.filesDir, encryptedFileName)
-        getEncryptedFile(targetFile).openFileOutput().use { outputStream ->
-            outputStream.write(dataToEncrypt)
+        try {
+            getEncryptedFile(targetFile).openFileOutput().use { outputStream ->
+                outputStream.write(dataToEncrypt)
+            }
+            Log.d(TAG, "Encryption complete. Saved to app private storage: ${targetFile.absolutePath}")
+        } catch (e: IOException) {
+            Log.e(TAG, "Error encrypting or saving file: ${e.message}")
+            throw e
         }
-        Log.d(TAG, "Encryption complete. Saved to app private storage: ${targetFile.absolutePath}")
-        // Added log to explicitly show the location
-        Log.d(TAG, "Encrypted file is located at: ${targetFile.absolutePath}")
-
-        // Return the File object for the newly created encrypted file
         return targetFile
     }
 
@@ -64,19 +59,12 @@ class EncryptedFileService(
      */
     fun decryptFile(sourceFile: File): ByteArray {
         Log.d(TAG, "Attempting to decrypt file from internal storage: ${sourceFile.absolutePath}")
-
         try {
-            // Get the EncryptedFile instance for the source file. This is crucial for matching the key.
             val encryptedFile = getEncryptedFile(sourceFile)
-            Log.d(TAG, "Created EncryptedFile instance for decryption.")
-
-            // Use the EncryptedFile's input stream to decrypt the data.
             val decryptedData = encryptedFile.openFileInput().use { inputStream ->
-                Log.d(TAG, "Opened EncryptedFile input stream. Starting decryption...")
                 inputStream.readBytes()
             }
             Log.d(TAG, "Decryption successful. Decrypted ${decryptedData.size} bytes.")
-
             return decryptedData
         } catch (e: Exception) {
             Log.e(TAG, "Decryption failed. Error: ${e.message}")
