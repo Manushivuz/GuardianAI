@@ -1,3 +1,5 @@
+// file: src/main/java/com/dsatm/guardianai/MainActivity.kt
+
 package com.dsatm.guardianai
 
 import android.os.Bundle

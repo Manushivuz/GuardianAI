@@ -43,8 +43,20 @@ dependencies {
     // Add Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2025.08.00")
     implementation(composeBom)
+    implementation("androidx.core:core-ktx:1.10.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.1")
+    implementation("androidx.activity:activity-compose:1.7.0")
 
+    // The dependencies you need to add
+    implementation("io.coil-kt:coil-compose:2.5.0")
+    implementation("com.google.mlkit:text-recognition:16.0.0")
+    implementation("androidx.activity:activity-compose:1.8.2")
 
+    implementation("androidx.documentfile:documentfile:1.1.0")
+    implementation("io.coil-kt:coil-compose:2.6.0")
+    implementation("com.google.mlkit:vision-common:17.3.0")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
     // Link to the core module
     implementation(project(":core"))
     //ner module
