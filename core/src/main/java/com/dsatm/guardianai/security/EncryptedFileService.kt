@@ -1,74 +1,86 @@
-// file: core/src/main/java/com/dsatm/guardianai/security/EncryptedFileService.kt
 package com.dsatm.guardianai.security
 
 import android.content.Context
 import android.util.Log
-import androidx.security.crypto.EncryptedFile
-import androidx.security.crypto.MasterKey
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
+import javax.crypto.Cipher
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 /**
- * A service class for handling file encryption and decryption using AndroidX Security Crypto.
- * It uses a MasterKey to secure the files.
+ * Custom file encryption service using the Secure Key managed by SecurityManager.
  */
-class EncryptedFileService(
-    private val context: Context,
-    private val masterKey: MasterKey
-) {
-    // Tag for logging messages
-    private val TAG = "EncryptedFileService"
+class EncryptedFileService(private val context: Context, private val securityManager: SecurityManager) {
+    private val TAG = "CustomEncryptedFileService"
+    private val TRANSFORMATION = "AES/GCM/NoPadding"
+    private val IV_SIZE = 12
 
-    // Helper function to create an EncryptedFile object with a specific file and master key
-    private fun getEncryptedFile(file: File): EncryptedFile {
-        return EncryptedFile.Builder(
-            context,
-            file,
-            masterKey,
-            EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB
-        ).build()
+    /**
+     * Retrieves the single SecretKey managed by the SecurityManager for I/O.
+     */
+    private fun getSecretKey(): SecretKey {
+        return securityManager.getOrCreateAuthKey()
     }
 
     /**
-     * Encrypts the provided byte array and saves it to a new, encrypted file
-     * in the app's private internal storage.
-     * @param dataToEncrypt The byte array to be encrypted.
-     * @param encryptedFileName The desired name of the output file.
-     * @return The File object of the newly created encrypted file.
+     * Encrypts the provided byte array, prepends the IV, and saves the result to internal storage.
      */
     fun encryptAndSaveFile(dataToEncrypt: ByteArray, encryptedFileName: String): File {
-        Log.d(TAG, "Attempting to encrypt and save file: $encryptedFileName")
+        Log.d(TAG, "Attempting custom encryption for: $encryptedFileName")
 
         val targetFile = File(context.filesDir, encryptedFileName)
+
         try {
-            getEncryptedFile(targetFile).openFileOutput().use { outputStream ->
-                outputStream.write(dataToEncrypt)
+            // 1. Initialize Cipher for ENCRYPT mode
+            val cipher = Cipher.getInstance(TRANSFORMATION).apply {
+                init(Cipher.ENCRYPT_MODE, getSecretKey())
             }
-            Log.d(TAG, "Encryption complete. Saved to app private storage: ${targetFile.absolutePath}")
-        } catch (e: IOException) {
-            Log.e(TAG, "Error encrypting or saving file: ${e.message}")
-            throw e
+
+            // 2. Perform encryption and get the generated IV
+            val encryptedData = cipher.doFinal(dataToEncrypt)
+            val iv = cipher.iv
+
+            // 3. Write IV (12 bytes) followed by encrypted data to file
+            FileOutputStream(targetFile).use { outputStream ->
+                outputStream.write(iv)
+                outputStream.write(encryptedData)
+            }
+
+            Log.d(TAG, "Custom encryption complete. Saved to: ${targetFile.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Custom encryption failed.", e)
+            throw IOException("Failed custom file encryption: ${e.message}", e)
         }
         return targetFile
     }
 
     /**
-     * Decrypts a file from the app's private internal storage and returns the decrypted byte array.
-     * @param sourceFile The encrypted File object to read from (from internal storage).
-     * @return The decrypted byte array.
+     * Decrypts a file by reading the IV and then the ciphertext.
      */
     fun decryptFile(sourceFile: File): ByteArray {
-        Log.d(TAG, "Attempting to decrypt file from internal storage: ${sourceFile.absolutePath}")
-        try {
-            val encryptedFile = getEncryptedFile(sourceFile)
-            val decryptedData = encryptedFile.openFileInput().use { inputStream ->
-                inputStream.readBytes()
+        Log.d(TAG, "Attempting custom decryption for: ${sourceFile.name}")
+
+        FileInputStream(sourceFile).use { inputStream ->
+            // 1. Read IV (Initialization Vector)
+            val iv = ByteArray(IV_SIZE)
+            if (inputStream.read(iv) != IV_SIZE) {
+                throw IOException("Corrupt encrypted file: IV not found or file is too small.")
             }
-            Log.d(TAG, "Decryption successful. Decrypted ${decryptedData.size} bytes.")
-            return decryptedData
-        } catch (e: Exception) {
-            Log.e(TAG, "Decryption failed. Error: ${e.message}")
-            throw e
+
+            // 2. Read encrypted data
+            val encryptedData = inputStream.readBytes()
+
+            // 3. Initialize Cipher for DECRYPT mode
+            val cipher = Cipher.getInstance(TRANSFORMATION).apply {
+                val spec = GCMParameterSpec(128, iv)
+                init(Cipher.DECRYPT_MODE, getSecretKey(), spec)
+            }
+
+            // 4. Perform decryption
+            return cipher.doFinal(encryptedData)
         }
     }
 }

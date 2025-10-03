@@ -1,15 +1,13 @@
-// file: core/src/main/java/com/dsatm/guardianai/security/SecurityManager.kt
-
 package com.dsatm.guardianai.security
 
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.util.Log
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
-import androidx.security.crypto.MasterKey
 import java.security.InvalidAlgorithmParameterException
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -19,46 +17,50 @@ import javax.crypto.spec.GCMParameterSpec
 
 class SecurityManager(private val context: Context) {
 
-    private val KEY_ALIAS = "my_app_key"
+    // --- KEY ALIASES ---
+    // Single key alias used for ALL crypto operations.
+    private val AUTH_KEY_ALIAS = "app_auth_key"
+
     private val ANDROID_KEYSTORE = "AndroidKeyStore"
     private val TRANSFORMATION = "AES/GCM/NoPadding"
-    val IV_SIZE = 12 // Made public to be used by other modules
+    val IV_SIZE = 12
     private val TAG = "SecurityManager"
 
     private val keyStore: KeyStore by lazy {
         KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
     }
 
-    val masterKey: MasterKey by lazy {
-        MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-    }
-
-    private fun getSecretKey(): SecretKey {
+    /**
+     * Retrieves or creates the single key used for ALL encryption/decryption.
+     * **NOTE: The key is created WITHOUT mandatory user authentication for background I/O.**
+     */
+    fun getOrCreateAuthKey(): SecretKey {
         return try {
-            val existingKey = keyStore.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
-            existingKey?.secretKey ?: createKey()
+            val existingKey = keyStore.getEntry(AUTH_KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
+            // FALSE: No authentication required for background use
+            existingKey?.secretKey ?: createKey(AUTH_KEY_ALIAS, false)
         } catch (e: Exception) {
             e.printStackTrace()
             throw e
         }
     }
 
-    private fun createKey(): SecretKey {
+
+    private fun createKey(alias: String, requiresAuth: Boolean): SecretKey {
         return KeyGenerator.getInstance(
             KeyProperties.KEY_ALGORITHM_AES,
             ANDROID_KEYSTORE
         ).apply {
             init(
                 KeyGenParameterSpec.Builder(
-                    KEY_ALIAS,
+                    alias,
                     KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
                 )
                     .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                     .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                     .setKeySize(256)
-                    .setUserAuthenticationRequired(true)
+                    // *** CRITICAL FIX: Removing mandatory user authentication for the key itself ***
+                    .setUserAuthenticationRequired(false)
                     .build()
             )
         }.generateKey()
@@ -71,11 +73,6 @@ class SecurityManager(private val context: Context) {
 
     /**
      * Shows a biometric prompt for simple authentication without a cryptographic object.
-     * This is an excellent use case for app startup or simple access control.
-     *
-     * @param activity The host FragmentActivity.
-     * @param onSuccess Callback for successful authentication.
-     * @param onFailure Callback for authentication errors.
      */
     fun authenticateForAppAccess(
         activity: FragmentActivity,
@@ -86,7 +83,7 @@ class SecurityManager(private val context: Context) {
             .setTitle("App Access")
             .setSubtitle("Authenticate to open the app")
             .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-            .setNegativeButtonText("Use Password") // <<< ADDED THIS LINE
+            .setNegativeButtonText("Use Password")
             .build()
 
         val biometricPrompt = BiometricPrompt(
@@ -114,14 +111,7 @@ class SecurityManager(private val context: Context) {
 
     /**
      * Shows a biometric prompt to authenticate the user for a cryptographic operation.
-     * The Cipher is passed to the biometric prompt, which unlocks it upon successful authentication.
-     *
-     * @param activity The host FragmentActivity.
-     * @param data The ByteArray to be encrypted or decrypted.
-     * @param mode The cryptographic operation mode (Cipher.ENCRYPT_MODE or Cipher.DECRYPT_MODE).
-     * @param iv The Initialization Vector (IV) required for decryption. Null for encryption.
-     * @param onSuccess Callback for a successful authentication and crypto operation.
-     * @param onFailure Callback for authentication errors.
+     * The Cipher is passed to the biometric prompt only to maintain the UX, but the key is not locked.
      */
     fun showBiometricPrompt(
         activity: FragmentActivity,
@@ -131,11 +121,14 @@ class SecurityManager(private val context: Context) {
         onSuccess: (resultData: ByteArray, newIv: ByteArray?) -> Unit,
         onFailure: (errorMessage: CharSequence) -> Unit
     ) {
+        // Capture 'mode' locally to ensure stability for the inner class
+        val finalMode = mode
+
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle("Biometric Authentication")
             .setSubtitle("Authenticate to access secure data")
             .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-            .setNegativeButtonText("Cancel") // <<< ADDED THIS LINE
+            .setNegativeButtonText("Cancel")
             .build()
 
         val biometricPrompt = BiometricPrompt(
@@ -154,11 +147,21 @@ class SecurityManager(private val context: Context) {
 
                     if (cipher != null) {
                         try {
+                            // --- DEBUG LOGS START ---
+                            Log.d(TAG, "Biometric success. Attempting cipher.doFinal()")
+//                            Log.d(TAG, "Cipher mode: ${cipher.mode}")
+                            Log.d(TAG, "Input data size: ${data.size} bytes")
+                            // --- DEBUG LOGS END ---
+
                             val resultData = cipher.doFinal(data)
-                            val newIv = if (mode == Cipher.ENCRYPT_MODE) cipher.iv else iv
+
+                            Log.d(TAG, "Cipher.doFinal succeeded. Output size: ${resultData.size} bytes")
+
+                            val newIv = if (finalMode == Cipher.ENCRYPT_MODE) cipher.iv else iv
                             onSuccess(resultData, newIv)
                         } catch (e: Exception) {
-                            onFailure("Error performing crypto operation: ${e.message}")
+                            Log.e(TAG, "Crypto operation FAILED after biometric success.", e)
+                            onFailure("Error performing crypto operation: ${e.message ?: "null"}")
                         }
                     } else {
                         onFailure("CryptoObject or Cipher is null")
@@ -175,12 +178,12 @@ class SecurityManager(private val context: Context) {
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
             try {
                 if (mode == Cipher.ENCRYPT_MODE) {
-                    init(Cipher.ENCRYPT_MODE, getSecretKey())
+                    init(Cipher.ENCRYPT_MODE, getOrCreateAuthKey())
                 } else {
                     if (iv == null || iv.size != IV_SIZE) {
                         throw InvalidAlgorithmParameterException("Invalid IV provided for decryption.")
                     }
-                    init(Cipher.DECRYPT_MODE, getSecretKey(), GCMParameterSpec(128, iv))
+                    init(Cipher.DECRYPT_MODE, getOrCreateAuthKey(), GCMParameterSpec(128, iv))
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
