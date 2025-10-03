@@ -30,6 +30,7 @@ import com.dsatm.guardianai.ui.screens.FileExplorerScreen
 import com.dsatm.guardianai.ui.screens.HomeScreen
 import com.dsatm.guardianai.ui.screens.SearchScreen // NEW IMPORT
 import com.dsatm.guardianai.ui.theme.GuardianAITheme
+import com.dsatm.guardianai.security.SecurityUtils
 
 /**
  * Main application entry point handling initial Biometric authentication.
@@ -42,7 +43,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        SecurityUtils.destroyMasterKey(this)
         securityManager = SecurityManager(this)
 
         if (securityManager.isBiometricReady()) {

@@ -1,5 +1,3 @@
-// file: core/src/main/java/com/dsatm/guardianai/security/FileManagementService.kt
-
 package com.dsatm.guardianai.security
 
 import android.content.Context
@@ -37,23 +35,66 @@ class FileManagementService(
     }
 
     /**
-     * Writes the redacted data to a public external storage location (e.g., the Downloads folder).
+     * Attempts to write the redacted data to the original file path.
+     * This method is only for files outside SAF control (should be avoided)
      *
-     * @param fileName The desired name for the redacted file.
+     * @param filePath The absolute path of the file (original file location).
      * @param redactedData The ByteArray of the redacted file data.
+     * @return The File object where the data was actually saved (either original or fallback location).
      */
-    fun saveRedactedFile(fileName: String, redactedData: ByteArray) {
-        val redactedFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), fileName)
+    fun saveRedactedFile(filePath: String, redactedData: ByteArray): File {
+        // NOTE: This method is now DEPRECATED by the SAF-compliant method below.
+        // It remains here to avoid breaking old calls, but its behavior is unpredictable
+        // due to the OS blocks. It now defaults to the fallback save.
+
+        val originalFile = File(filePath)
+
+        Log.w(TAG, "Using old path-based save. Attempting direct file write (expected to fail on API 30+).")
+
+        // --- Fallback Mechanism (Saves to app's guaranteed writable public folder) ---
+        val fallbackDir = File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "Redacted_Output")
+        if (!fallbackDir.exists()) fallbackDir.mkdirs()
+
+        val redactedFile = File(fallbackDir, originalFile.name)
+
         try {
             FileOutputStream(redactedFile).use { outputStream ->
                 outputStream.write(redactedData)
             }
-            Log.d(TAG, "Redacted file saved to public storage at: ${redactedFile.absolutePath}")
+            Log.w(TAG, "Redacted file saved to FALLBACK location: ${redactedFile.absolutePath}")
+
+            return redactedFile
+
         } catch (e: IOException) {
-            Log.e(TAG, "Error saving redacted file to public storage: ${e.message}")
-            throw e
+            Log.e(TAG, "FATAL: Fallback save also failed.", e)
+            throw IOException("Failed to save redacted file to app-external storage.", e)
         }
     }
+
+
+    // --- NEW SAF COMPLIANT METHOD ---
+
+    /**
+     * Saves the redacted data by opening a writable output stream for the given Content URI.
+     * This is the compliant method used to successfully overwrite the user-selected file.
+     *
+     * @param targetUri The Content URI of the file, granted write access via SAF.
+     * @param redactedData The ByteArray of the redacted file data.
+     * @throws IOException If writing to the URI fails (e.g., stream closed, data corrupt).
+     */
+    fun saveRedactedFileSaf(targetUri: Uri, redactedData: ByteArray) {
+        try {
+            context.contentResolver.openOutputStream(targetUri)?.use { outputStream ->
+                outputStream.write(redactedData)
+            } ?: throw IOException("Could not open output stream for target URI.")
+
+            Log.d(TAG, "SUCCESS: File overwritten via SAF URI: $targetUri")
+        } catch (e: Exception) {
+            Log.e(TAG, "FATAL: SAF file write failed for URI: $targetUri", e)
+            throw IOException("Failed to save redacted file using SAF URI: ${e.message}", e)
+        }
+    }
+
 
     /**
      * Lists all encrypted files saved in the app's internal storage directory.

@@ -28,6 +28,7 @@ import com.dsatm.guardianai.ui.Screen
 import kotlinx.coroutines.launch
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import androidx.fragment.app.FragmentActivity // NEW IMPORT
 
 // Custom colors matching ES File Explorer aesthetic
 private val PrimaryBlue = Color(0xFF0288D1)
@@ -53,6 +54,7 @@ data class StorageItem(
 @Composable
 fun HomeScreen(navController: NavController) {
     val context = LocalContext.current
+    val activity = context as FragmentActivity // Cast context to activity for RedactedFilesScreen
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
 
@@ -114,7 +116,8 @@ fun HomeScreen(navController: NavController) {
                     label = { Text("Redacted Files (Secure)") },
                     icon = { Icon(Icons.Default.Lock, contentDescription = null) },
                     selected = selectedTab == HomeTab.Redacted,
-                    onClick = { coroutineScope.launch { drawerState.close(); navController.navigate(Screen.Redacted.route) } }
+                    // CHANGE 1: Change to setting the tab state, NOT navigating away
+                    onClick = { coroutineScope.launch { drawerState.close(); selectedTab = HomeTab.Redacted } }
                 )
                 Divider(Modifier.padding(vertical = 8.dp))
                 NavigationDrawerItem(
@@ -169,85 +172,96 @@ fun HomeScreen(navController: NavController) {
                             .padding(bottom = 8.dp, top = 4.dp),
                         horizontalArrangement = Arrangement.SpaceAround
                     ) {
+                        // CHANGE 2: Change click handlers to set the tab state
                         CustomTabButton(HomeTab.Local, selectedTab == HomeTab.Local) { selectedTab = HomeTab.Local }
-                        CustomTabButton(HomeTab.Redacted, selectedTab == HomeTab.Redacted) { navController.navigate(Screen.Redacted.route) } // Direct navigation
-                        CustomTabButton(HomeTab.Tools, selectedTab == HomeTab.Tools) { navController.navigate(Screen.Tools.route) } // Direct navigation
+                        CustomTabButton(HomeTab.Redacted, selectedTab == HomeTab.Redacted) { selectedTab = HomeTab.Redacted }
+                        CustomTabButton(HomeTab.Tools, selectedTab == HomeTab.Tools) { navController.navigate(Screen.Tools.route) }
                     }
                 }
             }
         ) { paddingValues ->
             // Main Content Area based on selectedTab
-            LazyColumn(
+
+            // Container for Local/Redacted content
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
                     .background(LightBackground)
-                    .padding(16.dp)
             ) {
-                if (selectedTab == HomeTab.Local) {
-                    // --- Storage Analysis Section ---
-                    item {
-                        Text(
-                            text = "Storage",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(bottom = 12.dp),
-                            color = DarkGray
-                        )
+                when (selectedTab) {
+                    // Case 1: Local Tab (Shows file categories in a LazyColumn)
+                    is HomeTab.Local -> {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize().padding(16.dp)
+                        ) {
+                            // --- Storage Analysis Section ---
+                            item {
+                                Text(
+                                    text = "Storage",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(bottom = 12.dp),
+                                    color = DarkGray
+                                )
 
-                        // Internal/Downloads Cards
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            storageItems.forEach { item ->
-                                StorageCard(item = item) {
-                                    val encodedPath = URLEncoder.encode(item.path, StandardCharsets.UTF_8.toString())
-                                    navController.navigate(Screen.Explorer.createRoute(encodedPath))
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(20.dp))
-                        Divider()
-                    }
-
-                    // --- Library Section ---
-                    item {
-                        Text(
-                            text = "Library",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(vertical = 12.dp),
-                            color = DarkGray
-                        )
-
-                        // Grid/Wrap Layout for Library Items
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                libraryItems.take(2).forEach { item ->
-                                    LibraryCard(item = item, modifier = Modifier.weight(1f)) {
-                                        val encodedPath = URLEncoder.encode(item.path, StandardCharsets.UTF_8.toString())
-                                        navController.navigate(Screen.Explorer.createRoute(encodedPath))
+                                // Internal/Downloads Cards
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    storageItems.forEach { item ->
+                                        StorageCard(item = item) {
+                                            val encodedPath = URLEncoder.encode(item.path, StandardCharsets.UTF_8.toString())
+                                            navController.navigate(Screen.Explorer.createRoute(encodedPath))
+                                        }
                                     }
                                 }
+                                Spacer(modifier = Modifier.height(20.dp))
+                                Divider()
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                libraryItems.takeLast(2).forEach { item ->
-                                    LibraryCard(item = item, modifier = Modifier.weight(1f)) {
-                                        val encodedPath = URLEncoder.encode(item.path, StandardCharsets.UTF_8.toString())
-                                        navController.navigate(Screen.Explorer.createRoute(encodedPath))
+
+                            // --- Library Section ---
+                            item {
+                                Text(
+                                    text = "Library",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(vertical = 12.dp),
+                                    color = DarkGray
+                                )
+
+                                // Grid/Wrap Layout for Library Items
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        libraryItems.take(2).forEach { item ->
+                                            LibraryCard(item = item, modifier = Modifier.weight(1f)) {
+                                                val encodedPath = URLEncoder.encode(item.path, StandardCharsets.UTF_8.toString())
+                                                navController.navigate(Screen.Explorer.createRoute(encodedPath))
+                                            }
+                                        }
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        libraryItems.takeLast(2).forEach { item ->
+                                            LibraryCard(item = item, modifier = Modifier.weight(1f)) {
+                                                val encodedPath = URLEncoder.encode(item.path, StandardCharsets.UTF_8.toString())
+                                                navController.navigate(Screen.Explorer.createRoute(encodedPath))
+                                            }
+                                        }
                                     }
                                 }
+                                Spacer(modifier = Modifier.height(20.dp))
                             }
                         }
-                        Spacer(modifier = Modifier.height(20.dp))
                     }
-                } else if (selectedTab == HomeTab.Redacted) {
-                    // The Redacted tab now navigates away, but this item still exists for consistency
-                    item {
-                        RedactedFilesPlaceholder(navController = navController)
+
+                    // Case 2: Redacted Tab (Shows the secure files screen)
+                    is HomeTab.Redacted -> {
+                        // CHANGE 3: Display the RedactedFilesScreen directly here.
+                        RedactedFilesScreen(activity = activity)
                     }
-                } else if (selectedTab == HomeTab.Tools) {
-                    item {
-                        Text("Tools content area. Navigated from the custom tab.",
-                            modifier = Modifier.padding(16.dp))
+
+                    // Case 3: Tools Tab (Only navigation left in the header button)
+                    is HomeTab.Tools -> {
+                        // Should not be reachable via the segmented bar, but included for completeness.
+                        Text("Tools Content Area", modifier = Modifier.align(Alignment.Center).padding(16.dp))
                     }
                 }
             }
@@ -255,6 +269,9 @@ fun HomeScreen(navController: NavController) {
     }
 }
 
+// NOTE: All utility composables (CustomTabButton, StorageCard, LibraryCard, RedactedFilesPlaceholder)
+// remain UNCHANGED below this point, but RedactedFilesPlaceholder is now unused
+// because the RedactedFilesScreen Composable is shown directly.
 @Composable
 fun CustomTabButton(tab: HomeTab, isSelected: Boolean, onClick: () -> Unit) {
     TextButton(
@@ -355,6 +372,8 @@ fun LibraryCard(item: StorageItem, modifier: Modifier = Modifier, onClick: () ->
     }
 }
 
+// RedactedFilesPlaceholder is now redundant since the screen is shown directly,
+// but is left here if it's referenced elsewhere.
 @Composable
 fun RedactedFilesPlaceholder(navController: NavController) {
     Column(

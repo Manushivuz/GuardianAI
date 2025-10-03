@@ -1,6 +1,7 @@
 package com.dsatm.image_redaction.util
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.util.Log
 import com.google.mlkit.vision.common.InputImage
@@ -11,12 +12,15 @@ import kotlinx.coroutines.tasks.await
 object MLKitTextRecognizer {
     private const val TAG = "MLKitTextRecognizer"
 
-    suspend fun recognizeText(context: Context, imageUri: Uri): List<RecognizedWord> {
-        val inputImage = InputImage.fromFilePath(context, imageUri)
+// ... (Existing code remains above) ...
+
+    suspend fun recognizeText(context: Context, imageBitmap: Bitmap): List<RecognizedWord> {
+        // Use Bitmap directly to create InputImage
+        val inputImage = InputImage.fromBitmap(imageBitmap, 0)
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
         val recognizedWords = mutableListOf<RecognizedWord>()
 
-        Log.d(TAG, "Starting ML Kit text recognition for image URI: $imageUri")
+        Log.d(TAG, "Starting ML Kit text recognition for in-memory Bitmap.")
 
         val visionText = try {
             recognizer.process(inputImage).await()
@@ -35,7 +39,6 @@ object MLKitTextRecognizer {
                         val wordText = element.text
                         val boundingBox = element.boundingBox!!
                         recognizedWords.add(RecognizedWord(wordText, element.confidence, boundingBox))
-                        Log.d(TAG, "Recognized word: \"$wordText\" at $boundingBox")
                     }
                 }
             }
