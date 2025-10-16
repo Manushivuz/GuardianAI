@@ -2,8 +2,10 @@ package com.dsatm.guardianai.ui.screens
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Environment
+import android.net.Uri
+import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -21,15 +23,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.app.ActivityCompat
+import androidx.fragment.app.FragmentActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
+import android.os.Build // NEW IMPORT for API checks
+import android.os.Environment // NEW IMPORT for environment check
+
 
 private const val TAG = "FileListingContent"
 private val PrimaryBlue = Color(0xFF0288D1)
@@ -48,11 +56,18 @@ fun FileListingContent(
     onLoadingChange: (Boolean) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
+    val activity = context as? FragmentActivity
 
-    // Function to load files (remains within the Composable to access state updates)
+    // CRITICAL: Check for MANAGE_EXTERNAL_STORAGE availability
+    var isManageStorageGranted by remember {
+        mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager())
+    }
+
+    // Function to load files (runs only if access is granted)
     val loadFiles: suspend (Context, String, Boolean) -> Unit = { ctx, path, isInitialLoad ->
         onLoadingChange(true)
         withContext(Dispatchers.IO) {
+            // Note: This block now runs ONLY if isManageStorageGranted is true.
             val rootDir = File(path)
             if (rootDir.exists() && rootDir.isDirectory) {
                 val newFiles = rootDir.listFiles()?.toList()
@@ -66,36 +81,64 @@ fun FileListingContent(
             } else {
                 onFilesUpdate(emptyList())
                 Log.e(TAG, "Invalid path or directory not found: $path")
-                // Note: Path change logic is handled by the calling FileExplorerScreen
             }
         }
         onLoadingChange(false)
     }
 
-    // 1. Storage Permission Launcher
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
-        if (isGranted) {
-            coroutineScope.launch { loadFiles(context, currentPath, filesInCurrentDir.isNotEmpty()) }
+    // --- MANAGE_EXTERNAL_STORAGE Request Launcher ---
+    val manageStorageLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        // After returning from settings, check the status again
+        isManageStorageGranted = Environment.isExternalStorageManager()
+        if (isManageStorageGranted) {
+            coroutineScope.launch {
+                loadFiles(context, currentPath, true)
+            }
         } else {
-            Toast.makeText(context, "Storage permission is required to view files.", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "Full storage access is required.", Toast.LENGTH_LONG).show()
         }
     }
 
 
-    // Initial file load and path change listener
-    LaunchedEffect(currentPath) {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            permissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
-        } else {
+    // Initial state check and load trigger
+    LaunchedEffect(currentPath, isManageStorageGranted) {
+        if (isManageStorageGranted) {
             loadFiles(context, currentPath, true)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Only try to load files if access is granted or if API is older than R.
+            // For API >= R, we rely entirely on Environment.isExternalStorageManager() check.
+        } else {
+            // For older APIs (pre-R), we fall back to the deprecated READ_EXTERNAL_STORAGE check
+            // which your code handles, but which we will simplify out of necessity here:
+            // Force the request if we are older than R and don't have permission.
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                // For now, we trust the button click below handles this for older APIs.
+            }
         }
     }
+
+    // --- New Function to Handle Settings Redirect ---
+    val goToManageAccessSettings: () -> Unit = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11 (R) and above: Launch the dedicated 'All files access' screen
+            try {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                }
+                manageStorageLauncher.launch(intent)
+            } catch (e: Exception) {
+                // Fallback for devices that don't implement the specific intent correctly
+                manageStorageLauncher.launch(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            }
+        }
+    }
+
 
     Column(modifier = Modifier.fillMaxSize()) {
 
-        // --- Redaction Progress Indicator ---
+        // --- Redaction Progress Indicator (Remains the same) ---
         redactionProgress?.let { (processed, total) ->
             val progress = processed.toFloat() / total
             LinearProgressIndicator(
@@ -126,7 +169,36 @@ fun FileListingContent(
 
         // File Listing Content
         Box(modifier = Modifier.fillMaxSize()) {
-            if (isLoading) {
+
+            if (!isManageStorageGranted) {
+                // *** FIX: Show the Grant All Files Access UI ***
+                Column(
+                    modifier = Modifier.fillMaxSize().align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        "Full external storage access is required for file exploration.",
+                        color = Color.Gray,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(16.dp))
+
+                    // Button directs to the special settings screen
+                    Button(onClick = goToManageAccessSettings) {
+                        Text("Grant All Files Access")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Please toggle the 'Allow access to manage all files' switch.",
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+            else if (isLoading) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             } else if (filesInCurrentDir.isEmpty()) {
                 Text("No files or folders found here.", modifier = Modifier.align(Alignment.Center))

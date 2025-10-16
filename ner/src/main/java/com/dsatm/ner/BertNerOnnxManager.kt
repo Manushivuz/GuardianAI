@@ -1,3 +1,5 @@
+// File: com.dsatm.ner/BertNerOnnxManager.kt
+
 package com.dsatm.ner
 
 import android.content.Context
@@ -6,28 +8,22 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.nio.LongBuffer
-// 💡 This is the crucial import to ensure the class is visible
-import com.dsatm.ner.BertTokenizer
 
-/**
- * Manages the entire NER model pipeline.
- * ...
- */
 class BertNerOnnxManager(private val context: Context) {
 
     private val TAG = "BertNerOnnxManager"
     private lateinit var ortEnv: OrtEnvironment
     private lateinit var ortSession: OrtSession
     private lateinit var tokenizer: BertTokenizer
+
+    // Make postProcessor lateinit since it's initialized in `initialize()`
     lateinit var postProcessor: NerPostProcessor
 
-    /**
-     * Initializes all components of the NER pipeline.
-     */
     fun initialize() {
         Log.d(TAG, "Starting initialization of NER manager...")
         try {
             ortEnv = OrtEnvironment.getEnvironment()
+            // NOTE: Ensure 'mobilebert_ner.onnx' is in your assets folder
             ortSession = ortEnv.createSession(context.assets.open("mobilebert_ner.onnx").readBytes(), OrtSession.SessionOptions())
             Log.d(TAG, "ONNX session created successfully.")
 
@@ -54,9 +50,14 @@ class BertNerOnnxManager(private val context: Context) {
         if (!::ortSession.isInitialized) {
             throw IllegalStateException("BertNerOnnxManager is not initialized. Call initialize() first.")
         }
-        Log.d(TAG, "Starting PII detection for text: '$text'")
 
-        val tokenizedInput = tokenizer.tokenize(text)
+        // 🛑 FIX 2: Remove Vosk timestamps (e.g., "[1.23-1.50]") before passing to tokenizer
+        val cleanText = text.replace(Regex("\\[[\\d.]+-[\\d.]+\\]"), "").trim()
+
+        Log.d(TAG, "Starting PII detection for clean text: '$cleanText'")
+
+        // Use the cleaned text for tokenization
+        val tokenizedInput = tokenizer.tokenize(cleanText)
 
         val inputs = createOnnxTensors(tokenizedInput)
 
@@ -66,7 +67,9 @@ class BertNerOnnxManager(private val context: Context) {
             outputTensor = results[0] as OnnxTensor
             Log.d(TAG, "Inference successful. Starting post-processing.")
 
+            // Pass the original clean text to the post-processor for accurate string retrieval
             val entities = postProcessor.process(
+                originalText = cleanText,
                 tokenizedInput = tokenizedInput,
                 logits = outputTensor.floatBuffer.array()
             )
@@ -82,9 +85,16 @@ class BertNerOnnxManager(private val context: Context) {
     private fun createOnnxTensors(tokenizedInput: TokenizedInput): Map<String, OnnxTensor> {
         val inputs = mutableMapOf<String, OnnxTensor>()
 
-        inputs["input_ids"] = createTensor(tokenizedInput.inputIds, longArrayOf(1, tokenizedInput.inputIds.size.toLong()))
-        inputs["attention_mask"] = createTensor(tokenizedInput.attentionMask, longArrayOf(1, tokenizedInput.attentionMask.size.toLong()))
-        inputs["token_type_ids"] = createTensor(tokenizedInput.tokenTypeIds, longArrayOf(1, tokenizedInput.tokenTypeIds.size.toLong()))
+        // Use the actual data length (which is the truncated size)
+        val finalLength = tokenizedInput.inputIds.size.toLong()
+
+        // Tensors must be created with the shape that matches the data length
+        inputs["input_ids"] = createTensor(tokenizedInput.inputIds, longArrayOf(1, finalLength))
+        // Attention mask uses the data from the padded array, but we only send `finalLength` elements
+        val attentionMaskData = tokenizedInput.attentionMask.sliceArray(0 until finalLength.toInt())
+        inputs["attention_mask"] = createTensor(attentionMaskData, longArrayOf(1, finalLength))
+        val tokenTypeIdsData = tokenizedInput.tokenTypeIds.sliceArray(0 until finalLength.toInt())
+        inputs["token_type_ids"] = createTensor(tokenTypeIdsData, longArrayOf(1, finalLength))
 
         return inputs
     }

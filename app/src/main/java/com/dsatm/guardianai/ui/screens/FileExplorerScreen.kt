@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -31,6 +32,18 @@ import java.io.File
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
+// --- CRITICAL IMPORTS FOR COROUTINES AND UNITS ---
+import kotlinx.coroutines.Dispatchers
+import androidx.compose.ui.unit.dp
+// --- END CRITICAL IMPORTS ---
+
+// --- AUDIO IMPORTS ---
+import com.dsatm.audio_redaction.AudioRedactionExecutor
+import com.dsatm.audio_redaction.ui.AudioRedactionManager // Vosk Manager
+import com.dsatm.audio_redaction.ui.WavAudioMuter // WAV Processor
+import com.dsatm.ner.BertNerOnnxManager // NER Model
+// --- END AUDIO IMPORTS ---
+
 private const val TAG = "FileExplorerScreen"
 private val PrimaryBlue = Color(0xFF0288D1)
 
@@ -46,15 +59,31 @@ fun FileExplorerScreen(
     val coroutineScope = rememberCoroutineScope()
 
     // --- 1. Service Initialization ---
+    // Core Services
     val securityManager = remember { SecurityManager(context) }
     val encryptedFileService = remember { EncryptedFileService(context, securityManager) }
     val fileManagementService = remember { FileManagementService(context, encryptedFileService) }
+
+    // Feature Modules
     val imageRedactionManager = remember { ImageRedactionManager(context) }
+
+    // *** AUDIO REDACTION SETUP ***
+    val voskManager = remember { AudioRedactionManager(context) } // Vosk model loading/state
+    val nerManager = remember { BertNerOnnxManager(context) } // NER Model
+    val audioMuter = remember { WavAudioMuter() } // Audio processor
+
+    val audioRedactionExecutor = remember {
+        AudioRedactionExecutor(context, voskManager, nerManager, audioMuter)
+    }
+    // *** END AUDIO REDACTION SETUP ***
+
+    // Redaction Processor now takes all necessary executors/managers
     val redactionProcessor = remember {
-        RedactionProcessor(context, fileManagementService, imageRedactionManager)
+        // Updated constructor with the new audio component
+        RedactionProcessor(context, fileManagementService, imageRedactionManager, audioRedactionExecutor)
     }
 
-    // --- 2. State Management ---
+    // --- 2. State Management & Model Ready Check ---
     val decodedStartPath = remember { URLDecoder.decode(encodedPath, StandardCharsets.UTF_8.toString()) }
     var currentPath by remember { mutableStateOf(decodedStartPath) }
     var filesInCurrentDir by remember { mutableStateOf<List<File>>(emptyList()) }
@@ -65,11 +94,33 @@ fun FileExplorerScreen(
     var redactionOptions by remember { mutableStateOf(RedactionOptions()) }
     var redactionProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
 
-    // NEW SAF STATE: Holds the granted URI for the selected folder, allowing WRITE/DELETE operations.
     var writableFolderUri by remember { mutableStateOf<Uri?>(null) }
+    var isNerModelReady by remember { mutableStateOf(false) } // NEW STATE
+
+    // --- CRITICAL: Initialize NER Model and Vosk Model on load ---
+    LaunchedEffect(Unit) {
+        coroutineScope.launch(Dispatchers.IO) {
+            // Initialize NER Model
+            try {
+                nerManager.initialize()
+                Log.d(TAG, "BertNerOnnxManager initialized.")
+
+                // Await Vosk Model (from AudioRedactionManager)
+                while (!voskManager.isModelLoaded()) {
+                    kotlinx.coroutines.delay(100)
+                }
+                Log.d(TAG, "Vosk model loaded.")
+
+                isNerModelReady = true
+            } catch (e: Exception) {
+                Log.e(TAG, "FATAL: Failed to initialize NER or Vosk models.", e)
+            }
+        }
+    }
+    // --- END MODEL INITIALIZATION ---
+
 
     // --- 3. Redaction Logic using Writable URI ---
-    // Apply an explicit label to guarantee the return works.
     val startRedactionWithUri: suspend (Uri) -> Unit = safFlow@{ folderUri ->
         val folderToRedact = DocumentFile.fromTreeUri(context, folderUri)
 
@@ -133,7 +184,6 @@ fun FileExplorerScreen(
 
 
     // --- 5. Redaction Flow Initiation ---
-    // Apply an explicit label to guarantee the return works.
     val startRedaction: (isImageChecked: Boolean, isAudioChecked: Boolean) -> Unit = redactInit@{ isImageChecked, isAudioChecked ->
 
         if (redactionOptions.imageCount == 0 && redactionOptions.audioCount == 0) {
@@ -195,23 +245,31 @@ fun FileExplorerScreen(
             .fillMaxSize()
             .padding(paddingValues)) {
 
-            // FileListingContent handles the UI for the files/folders
-            FileListingContent(
-                context = context,
-                decodedStartPath = decodedStartPath,
-                currentPath = currentPath,
-                onPathChange = ::handlePathChange,
-                onFolderLongPress = { file ->
-                    selectedFolder = file
-                    redactionOptions = analyzeFolderForRedaction(file) // Utility from RedactionDialogs.kt
-                    showRedactDialog = true
-                },
-                redactionProgress = redactionProgress,
-                filesInCurrentDir = filesInCurrentDir,
-                onFilesUpdate = { filesInCurrentDir = it },
-                isLoading = isLoading,
-                onLoadingChange = { isLoading = it }
-            )
+            // --- ADD CHECK FOR MODEL INITIALIZATION ---
+            if (!isNerModelReady) {
+                Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                    Text("Initializing AI Models...", modifier = Modifier.padding(top = 60.dp))
+                }
+            } else {
+                // FileListingContent runs ONLY when models are ready
+                FileListingContent(
+                    context = context,
+                    decodedStartPath = decodedStartPath,
+                    currentPath = currentPath,
+                    onPathChange = ::handlePathChange,
+                    onFolderLongPress = { file ->
+                        selectedFolder = file
+                        redactionOptions = analyzeFolderForRedaction(file) // Utility from RedactionDialogs.kt
+                        showRedactDialog = true
+                    },
+                    redactionProgress = redactionProgress,
+                    filesInCurrentDir = filesInCurrentDir,
+                    onFilesUpdate = { filesInCurrentDir = it },
+                    isLoading = isLoading,
+                    onLoadingChange = { isLoading = it }
+                )
+            }
         }
 
         // Redaction Confirmation Dialog
