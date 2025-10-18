@@ -1,31 +1,25 @@
+// File: com.dsatm.ner/DataModels.kt
+
 package com.dsatm.ner
 
 /**
- * Data class for the output of the tokenization process,
- * including tokens, IDs, masks, and the mapping from token index to original text start/end index.
+ * Represents a single detected PII entity.
+ */
+data class PiiEntity(
+    val label: String,
+    val text: String,
+    val start: Int, // Character index start in original text (inclusive)
+    val end: Int    // Character index end in original text (exclusive)
+)
+
+/**
+ * Represents the BERT model's tokenized input.
  */
 data class TokenizedInput(
     val inputIds: LongArray,
     val attentionMask: LongArray,
     val tokenTypeIds: LongArray,
     val tokens: List<String>,
-    // Crucial: A list of pairs where each pair is (start_index, end_index) in the ORIGINAL string
-    // corresponding to the token at the same list index.
+    // Maps token index (1, 2, 3...) to character span in ORIGINAL text (Pair<start, end>)
     val tokenToOriginalTextMap: List<Pair<Int, Int>>
-)
-
-/**
- * Represents a single detected PII entity.
- *
- * @param label The type of PII (e.g., GIVENNAME, STREET).
- * @param text The extracted text of the entity.
- * @param start The inclusive start index of the entity in the original text.
- * @param end The exclusive end index of the entity in the original text.
- */
-data class PiiEntity(
-    val label: String,
-    val text: String,
-    // ADDED: The precise character indices in the original text
-    val start: Int,
-    val end: Int
 )

@@ -51,9 +51,27 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.activity:activity-compose:1.9.0")
 
     // Add this for compose previews
     debugImplementation("androidx.compose.ui:ui-tooling")
+    // vosk implementation dependency
+    implementation("com.alphacephei:vosk-android:0.3.70")
+
+    // For AppCompatActivity (Provides the base class for your Activity)
+    implementation("androidx.appcompat:appcompat:1.7.0")
+// For ActivityResultContracts and ActivityResultLauncher (The modern way to get results from an Activity)
+// Use the -ktx version for Kotlin projects
+    implementation("androidx.activity:activity-ktx:1.9.0")
+
+    implementation("org.json:json:20250517")
+    // FFMPEG for audio beeping
+
+    implementation("androidx.compose.material:material-icons-extended:1.7.0")
+
+
+
+
 
 
     testImplementation(libs.junit)
