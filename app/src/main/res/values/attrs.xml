@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Declare attributes for the KeyboardView style to resolve AAPT2 linking errors.
+         These map directly to the properties defined in the standard Android SDK's
+         com.android.inputmethodservice.KeyboardView class. -->
+    <declare-styleable name="KeyboardView">
+        <attr name="keyBackground" format="reference|color" />
+        <attr name="keyTextSize" format="dimension" />
+        <attr name="keyTextColor" format="reference|color" />
+        <attr name="keyHlBackground" format="reference|color" />
+        <attr name="keyHlTextColor" format="reference|color" />
+        <attr name="keyPreviewLayout" format="reference" />
+        <attr name="keyPreviewOffset" format="dimension" />
+        <attr name="keyPreviewTextSize" format="dimension" />
+        <attr name="verticalCorrection" format="dimension" />
+
+        <!-- Add keyboardViewStyle attribute as well, although usually defined elsewhere -->
+        <attr name="keyboardViewStyle" format="reference" />
+    </declare-styleable>
+</resources>

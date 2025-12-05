@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Define the Theme for the InputMethodService in AndroidManifest.xml -->
+    <style name="Theme.GuardianKeyboardService" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Background for the entire keyboard area -->
+        <item name="android:windowBackground">#E0E0E0</item>
+        <!-- Link our custom style to the KeyboardView component -->
+        <item name="keyboardViewStyle">@style/ModernGuardianKeyboardView</item>
+    </style>
+
+    <!-- The actual style definition for the KeyboardView widget -->
+    <style name="ModernGuardianKeyboardView" parent="android:Widget.KeyboardView">
+        <item name="android:background">#E0E0E0</item>
+
+        <!-- Key Styling (References our custom drawables) -->
+        <item name="keyBackground">@drawable/key_background_special</item>
+        <item name="keyTextSize">16sp</item>
+        <item name="keyTextColor">#37474F</item>
+
+        <!-- Highlight colors -->
+        <item name="keyHlBackground">#1976D2</item> <!-- PrimaryBlue -->
+        <item name="keyHlTextColor">#FFFFFF</item>
+
+        <!-- Preview (Making the preview clean/non-distracting) -->
+        <item name="keyPreviewLayout">@null</item>
+        <item name="keyPreviewTextSize">24sp</item>
+        <item name="verticalCorrection">0dp</item>
+    </style>
+</resources>

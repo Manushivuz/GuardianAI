@@ -45,6 +45,7 @@ android {
 
 dependencies {
     implementation(libs.androidx.foundation)
+    implementation(libs.foundation)
     // -------------------------------------------------------------------------
     // COMPOSE BOM
     val composeBom = platform(libs.androidx.compose.bom)
