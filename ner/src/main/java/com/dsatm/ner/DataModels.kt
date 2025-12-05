@@ -9,7 +9,7 @@ data class PiiEntity(
     val label: String,
     val text: String,
     val start: Int, // Character index start in original text (inclusive)
-    val end: Int    // Character index end in original text (exclusive)
+    val end: Int // Character index end in original text (exclusive)
 )
 
 /**
@@ -23,3 +23,20 @@ data class TokenizedInput(
     // Maps token index (1, 2, 3...) to character span in ORIGINAL text (Pair<start, end>)
     val tokenToOriginalTextMap: List<Pair<Int, Int>>
 )
+
+// --- Added for Text/Clipboard (Regex support) ---
+
+/**
+ * Represents a generic sensitive data match, used for both NER and Regex results.
+ */
+data class SensitiveMatch(
+    val text: String,
+    val label: String,
+    val start: Int,
+    val end: Int
+)
+
+/**
+ * Represents a PII regex pattern for detection.
+ */
+data class RegexPii(val label: String, val regex: String)
