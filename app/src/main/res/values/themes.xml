@@ -1,5 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.GuardianAI" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Theme inherited by the entire application (referenced in AndroidManifest) -->
+    <!-- Assuming Theme.GuardianAI is your root application theme -->
+    <style name="Theme.GuardianAI" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- CRITICAL FIX: Link the custom style to the KeyboardView component via the Theme -->
+        <item name="keyboardViewStyle">@style/KeyboardStyle</item>
+
+        <!-- Other application-wide styling attributes go here -->
+    </style>
+
+    <!-- Style for the KeyboardView widget -->
+    <style name="KeyboardStyle" parent="android:Widget.KeyboardView">
+
+        <item name="android:background">#F0F3F5</item>
+
+        <!-- NOTE: These attributes MUST NOT have the 'android:' prefix
+             because they are declared as custom attributes in attrs.xml -->
+        <item name="keyBackground">@drawable/key_background_special</item>
+        <item name="keyTextSize">18sp</item>
+        <item name="keyTextColor">#37474F</item>
+
+        <item name="keyHlBackground">#2196F3</item>
+        <item name="keyHlTextColor">#FFFFFF</item>
+
+        <item name="keyPreviewLayout">@null</item>
+        <item name="keyPreviewOffset">-10dp</item>
+        <item name="keyPreviewTextSize">22sp</item>
+        <item name="verticalCorrection">-10dp</item>
+    </style>
 </resources>
