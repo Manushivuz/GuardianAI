@@ -1,25 +1,25 @@
+// File: com.dsatm.audio_redaction/AudioRedactionExecutor.kt (RE-FIXED FOR SILENT EXIT)
+
 package com.dsatm.audio_redaction
 
 import android.content.Context
 import android.net.Uri
 import android.util.Log
-import com.dsatm.audio_redaction.ui.AudioRedactionManager // Use the existing Vosk/Decode logic
-import com.dsatm.audio_redaction.ui.WavAudioMuter // Use the existing WAV muter
+import com.dsatm.audio_redaction.ui.AudioRedactionManager
+import com.dsatm.audio_redaction.ui.WavAudioMuter
 import com.dsatm.ner.BertNerOnnxManager
-import com.dsatm.ner.mapPiiToTimeRanges
+import com.dsatm.ner.PiiEntity
+import com.dsatm.ner.mapPiiToTimeRanges // Assuming this function exists
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import java.io.*
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.*
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+
+private const val TAG = "AudioRedactionExecutor"
 
 /**
- * Executes the full Audio Redaction pipeline: Decode -> Transcribe -> NER -> Mute -> Encode.
- * Exposes a clean ByteArray API to the RedactionProcessor.
+ * Executes the full Audio Redaction pipeline based on the new two-step Manager logic.
  */
 class AudioRedactionExecutor(
     private val context: Context,
@@ -27,63 +27,105 @@ class AudioRedactionExecutor(
     private val nerManager: BertNerOnnxManager,
     private val audioMuter: WavAudioMuter
 ) {
-    private val TAG = "AudioRedactionExecutor"
 
     /**
-     * Entry point for the RedactionProcessor.
-     * Takes the original audio bytes and returns the redacted audio bytes.
+     * Main entry point. Takes original audio bytes and returns redacted audio bytes.
      */
-    suspend fun redactAudio(originalAudioBytes: ByteArray): ByteArray {
-        val tempInputFile = saveBytesToTempFile(originalAudioBytes, "input_audio", ".wav")
-        val tempMutedFile = File(context.cacheDir, "muted_output_${System.currentTimeMillis()}.wav")
+    suspend fun redactAudio(originalAudioBytes: ByteArray): ByteArray = withContext(Dispatchers.IO) {
+
+        // Use unique names to avoid conflicts
+        val timestamp = System.currentTimeMillis()
+        val tempOriginalEncodedFile = saveBytesToTempFile(originalAudioBytes, "original_encoded_audio", ".mp3")
+        val tempDecodedWavFile = File(context.cacheDir, "decoded_pcm_$timestamp.wav")
+        val tempMutedFile = File(context.cacheDir, "muted_output_$timestamp.wav")
+
+        val uri = Uri.fromFile(tempOriginalEncodedFile)
+        var rawTranscript: String = "Transcription failed to start."
+        var entities: List<PiiEntity> = emptyList()
 
         try {
-            // 1. Transcribe (Await is handled internally by VoskManager)
-            val rawTranscript = suspendCoroutine<String> { continuation ->
-                val uri = Uri.fromFile(tempInputFile)
-                voskManager.transcribeInternal(uri, includeTimestamps = true) { result ->
-                    continuation.resume(result)
-                }
+            Log.i(TAG, "--- Starting Audio Redaction Pipeline ---")
+            Log.d(TAG, "File: ${tempOriginalEncodedFile.name}")
+
+            // 1a. Export decoded WAV file (Required for WavAudioMuter input)
+            Log.d(TAG, "Step 1a: Exporting WAV (PCM) file for muting.")
+            val exportSuccess = voskManager.exportDecodedPcmWav(uri, tempDecodedWavFile)
+
+            if (!exportSuccess || !tempDecodedWavFile.exists()) {
+                Log.e(TAG, "FATAL: WAV export failed. Cannot proceed to muting.")
+                throw IOException("WAV export failed by AudioRedactionManager.")
             }
+            Log.d(TAG, "WAV exported successfully. Size: ${tempDecodedWavFile.length()}")
 
-            if (rawTranscript.startsWith("Error")) {
-                throw IOException("Transcription failed: $rawTranscript")
+
+            // 1b. Transcribe using internal VOSK logic
+            Log.d(TAG, "Step 1b: Running VOSK transcription (with timestamps and number conversion).")
+            rawTranscript = voskManager.transcribeInternal(uri, includeTimestamps = true)
+
+            if (rawTranscript.startsWith("Error:")) {
+                Log.e(TAG, "FATAL: Transcription returned error: $rawTranscript")
+                throw IOException(rawTranscript)
             }
+            Log.i(TAG, "Transcription Success. Raw Transcript: '$rawTranscript'")
 
-            // 2. Analyze PII and Map Time Ranges
-            val cleanTranscript = rawTranscript.replace(Regex("\\[[\\d.]+-[\\d.]+\\]"), "").trim()
-            val entities = nerManager.detectPii(rawTranscript)
 
+            // 2. Run NER to detect PII
+            Log.d(TAG, "Step 2: Running NER detection on raw transcript.")
+            entities = nerManager.detectPii(rawTranscript)
+            Log.i(TAG, "NER detected ${entities.size} entities in transcript.")
+            Log.i(TAG, "NER detected:  ${entities}")
+
+            // 3. Map detected PII to time ranges (in milliseconds)
             val muteRangesMs = try {
+                Log.d(TAG, "Step 3: Mapping PII entities to time ranges.")
                 mapPiiToTimeRanges(rawTranscript, entities)
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to map PII to time ranges: ${e.message}")
+                // This is the point where we saw "Mapping failed" previously.
+                Log.e(TAG, "FATAL: Failed to map PII entities to time ranges.", e)
                 emptyList<Pair<Long, Long>>()
             }
 
             if (muteRangesMs.isEmpty()) {
-                Log.i(TAG, "No PII found for muting. Returning original audio bytes.")
-                return originalAudioBytes
+                Log.i(TAG, "No PII found for muting (either detection or mapping returned empty). Returning original.")
+                return@withContext originalAudioBytes
             }
+            Log.d(TAG, "Muting: ${muteRangesMs.size} time range(s) found.")
+            Log.d(TAG, "Muting: ${muteRangesMs}")
 
-            // 3. Mute Audio (WAV file processing)
-            val success = audioMuter.processAudio(tempInputFile, tempMutedFile, muteRangesMs)
+
+            // 4. Apply muting on the VALID WAV file
+            Log.d(TAG, "Step 4: Muting audio segments on WAV file.")
+            val success = audioMuter.processAudio(tempDecodedWavFile, tempMutedFile, muteRangesMs)
 
             if (!success || !tempMutedFile.exists()) {
-                throw IOException("Audio muting failed or output file not created.")
+                Log.e(TAG, "FATAL: WavAudioMuter returned false or output file missing.")
+                throw IOException("Audio muting failed.")
             }
+            Log.i(TAG, "Muting complete. Reading final redacted bytes.")
 
-            // 4. Return muted bytes
-            return tempMutedFile.readBytes()
-
+            // 5. Return muted audio bytes
+            return@withContext tempMutedFile.readBytes()
+        } catch (e: Exception) {
+            Log.e(TAG, "Redaction failed due to exception: ${e.message}", e)
+            // Always return original bytes if the redaction pipeline fails.
+            return@withContext originalAudioBytes
         } finally {
-            // Cleanup temporary files
-            tempInputFile.delete()
-            tempMutedFile.delete()
+            // --- CLEANUP TEMP FILES ---
+            try {
+                tempOriginalEncodedFile.delete()
+                tempDecodedWavFile.delete()
+                tempMutedFile.delete()
+                Log.d(TAG, "Cleaned up temporary files.")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to delete temp files: ${e.message}")
+            }
+            Log.i(TAG, "--- Audio Redaction Pipeline Finished ---")
         }
     }
 
-    // Helper to write bytes to a temp file, necessary for MediaCodec/WavAudioMuter
+    /**
+     * Helper to write ByteArray to a temporary file.
+     */
     private fun saveBytesToTempFile(bytes: ByteArray, prefix: String, suffix: String): File {
         val tempFile = File(context.cacheDir, "${prefix}_${System.currentTimeMillis()}$suffix")
         FileOutputStream(tempFile).use { it.write(bytes) }

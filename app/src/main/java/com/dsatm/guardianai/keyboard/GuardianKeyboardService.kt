@@ -13,6 +13,7 @@ import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import com.dsatm.ner.TextBertNerOnnxManager
 
 class GuardianKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActionListener {
 
@@ -21,7 +22,8 @@ class GuardianKeyboardService : InputMethodService(), KeyboardView.OnKeyboardAct
     private lateinit var keyboardView: KeyboardView
     private lateinit var keyboard: Keyboard
     private var caps = false
-    private lateinit var nerManager: com.dsatm.ner.BertNerOnnxManager
+    // USE NEW MANAGER
+    private lateinit var textNerManager: TextBertNerOnnxManager
     private lateinit var clipboardManager: ClipboardManager
     private var isModelInitialized: Boolean = false
 
@@ -30,16 +32,17 @@ class GuardianKeyboardService : InputMethodService(), KeyboardView.OnKeyboardAct
         Log.d(TAG, "Keyboard Service Created")
 
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        nerManager = com.dsatm.ner.BertNerOnnxManager(applicationContext)
+        // INITIALIZE NEW MANAGER
+        textNerManager = TextBertNerOnnxManager(applicationContext)
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                nerManager.initialize()
+                textNerManager.initialize()
                 isModelInitialized = true
-                Log.d(TAG, "NER Model initialized successfully")
+                Log.d(TAG, "Text NER Model initialized successfully")
             } catch (e: Exception) {
                 isModelInitialized = false
-                Log.e(TAG, "NER Model initialization failed", e)
+                Log.e(TAG, "Text NER Model initialization failed", e)
             }
         }
     }
@@ -110,8 +113,11 @@ class GuardianKeyboardService : InputMethodService(), KeyboardView.OnKeyboardAct
 
             CoroutineScope(Dispatchers.IO).launch {
                 try {
-                    val entities = nerManager.detectPii(text)
-                    val maskedText = nerManager.postProcessor.redactText(text, entities)
+                    // 1. Call the new text-specific detection method
+                    val entities = textNerManager.detectPiiForText(text)
+
+                    // 2. Call the new text-specific redaction method on the new processor
+                    val maskedText = textNerManager.textPostProcessor.applyClipboardRedaction(text, entities)
 
                     launch(Dispatchers.Main) {
                         inputConnection.commitText(maskedText, 1)
@@ -139,8 +145,8 @@ class GuardianKeyboardService : InputMethodService(), KeyboardView.OnKeyboardAct
 
     override fun onDestroy() {
         super.onDestroy()
-        if (::nerManager.isInitialized) {
-            nerManager.close()
+        if (::textNerManager.isInitialized) {
+            textNerManager.close()
         }
     }
 }
