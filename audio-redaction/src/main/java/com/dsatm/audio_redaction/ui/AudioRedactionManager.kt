@@ -1,5 +1,3 @@
-// File: com.dsatm.audio_redaction.ui/AudioRedactionManager.kt (FINAL PITCH FIX)
-
 package com.dsatm.audio_redaction.ui
 
 import android.content.Context
@@ -20,7 +18,7 @@ import java.nio.ByteOrder
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.collections.ArrayList // Explicit import
+import kotlin.collections.ArrayList
 
 private const val TAG = "AudioRedactionManager"
 private const val TARGET_SAMPLE_RATE = 16000
@@ -77,8 +75,40 @@ class AudioRedactionManager(private val context: Context) {
     fun isModelLoaded(): Boolean = model != null
 
     /**
-     * Internal method for transcription, used by the AudioRedactionExecutor.
-     * CRITICAL: Since Vosk requires 16kHz, this method ensures 16kHz conversion before feeding data.
+     * NEW: Returns the raw, lowercase, space-separated transcript (no digit conversion).
+     * This output MUST be used by the PII Mapper/NER system to ensure correct character index and word matching.
+     */
+    suspend fun getRawLowercaseTranscript(uri: Uri): String =
+        withContext(Dispatchers.IO) {
+            val m = model ?: return@withContext "Error: Vosk model not loaded"
+
+            val recognizer = Recognizer(m, TARGET_SAMPLE_RATE.toFloat())
+            recognizer.setWords(true) // Ensure word-level results
+
+            return@withContext try {
+                decodeAndFeedToRecognizer(uri, recognizer)
+                val finalJson = JSONObject(recognizer.finalResult)
+
+                // Combine the word results array into a single, space-separated, lowercase string
+                val arr = finalJson.optJSONArray("result") ?: JSONArray()
+                val rawWords = (0 until arr.length()).map { i ->
+                    arr.getJSONObject(i).optString("word", "")
+                }
+                rawWords.joinToString(" ").lowercase()
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Raw transcription failed", e)
+                "Error: ${e.message}"
+            } finally {
+                try {
+                    recognizer.close()
+                } catch (_: Exception) {}
+            }
+        }
+
+    /**
+     * Internal method for transcription, now used for the FINAL output only.
+     * It applies the digit conversion and returns the final text.
      */
     suspend fun transcribeInternal(uri: Uri, includeTimestamps: Boolean): String =
         withContext(Dispatchers.IO) {
@@ -93,9 +123,11 @@ class AudioRedactionManager(private val context: Context) {
 
                 if (!includeTimestamps) {
                     val rawText = finalJson.optString("text", "")
+                    // Applies digit conversion for the final display output
                     convertWordNumbersToDigits(rawText)
                 } else {
                     val arr = finalJson.optJSONArray("result") ?: JSONArray()
+                    // buildTimestampText handles the conversion internally for display
                     buildTimestampText(arr)
                 }
             } catch (e: Exception) {
@@ -115,7 +147,8 @@ class AudioRedactionManager(private val context: Context) {
             val o = arr.getJSONObject(i)
 
             val rawWord = o.optString("word", "")
-            val w = convertWordNumbersToDigits(rawWord)
+            // Ensure the word is passed in lowercase to the converter for consistency
+            val w = convertWordNumbersToDigits(rawWord.lowercase())
 
             val s = o.optDouble("start", 0.0)
             val e = o.optDouble("end", 0.0)
@@ -128,17 +161,16 @@ class AudioRedactionManager(private val context: Context) {
         return sb.toString()
     }
 
-    /**
-     * Decodes audio to PCM, **resamples to TARGET_SAMPLE_RATE (16000 Hz)**, and feeds to Vosk.
-     */
+    // --- (The rest of the MediaCodec and WAV utility functions remain unchanged as they handle audio data) ---
+
     private fun decodeAndFeedToRecognizer(uri: Uri, recognizer: Recognizer) {
-        // Implementation logic for decoding and feeding data to recognizer with resampling
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
+        var outputFormat: MediaFormat? = null
 
+        // ... (Implementation logic remains the same, including resampling)
         try {
             extractor.setDataSource(context, uri, null)
-
             val track = (0 until extractor.trackCount).firstOrNull { i ->
                 extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
             } ?: return
@@ -154,7 +186,6 @@ class AudioRedactionManager(private val context: Context) {
             val info = MediaCodec.BufferInfo()
             var eosIn = false
             var eosOut = false
-            var outputFormat: MediaFormat? = null
 
             while (!eosOut) {
                 if (!eosIn) {
@@ -203,11 +234,9 @@ class AudioRedactionManager(private val context: Context) {
                                 else -> shortMono(toShortArray(bytes), channels)
                             }
 
-                            // *** CRITICAL RESAMPLING STEP RE-INTRODUCED ***
                             if (outputSampleRate != TARGET_SAMPLE_RATE) {
                                 pcmChunk = resampleShortArray(pcmChunk, outputSampleRate, TARGET_SAMPLE_RATE)
                             }
-                            // *** END CRITICAL RESAMPLING STEP ***
 
                             recognizer.acceptWaveForm(pcmChunk, pcmChunk.size)
                         }
@@ -227,14 +256,9 @@ class AudioRedactionManager(private val context: Context) {
     }
 
 
-    /**
-     * Exports decoded PCM to a WAV file.
-     * CRITICAL: Uses the decoded sample rate to ensure correct header creation.
-     */
     fun exportDecodedPcmWav(uri: Uri, outFile: File): Boolean {
         return try {
             val (pcm, sampleRate) = decodeToPcm16(uri) ?: return false
-            // Use the actual decoded sample rate for the WAV header
             writeWav16(pcm, sampleRate, outFile)
             Log.i(TAG, "WAV exported at ${sampleRate} Hz.")
             true
@@ -245,14 +269,12 @@ class AudioRedactionManager(private val context: Context) {
         }
     }
 
-    /**
-     * Decodes audio to 16-bit PCM and returns the data along with the **actual decoded sample rate**.
-     */
     private fun decodeToPcm16(uri: Uri): Pair<ShortArray, Int>? {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         val shorts = ArrayList<Short>()
-        var finalSampleRate = TARGET_SAMPLE_RATE // Default to target rate
+        var finalSampleRate = TARGET_SAMPLE_RATE
+        var outputFormat: MediaFormat? = null
 
         try {
             extractor.setDataSource(context, uri, null)
@@ -271,7 +293,6 @@ class AudioRedactionManager(private val context: Context) {
             val info = MediaCodec.BufferInfo()
             var eosIn = false
             var eosOut = false
-            var outputFormat: MediaFormat? = null
 
             while (!eosOut) {
                 if (!eosIn) {
@@ -295,7 +316,6 @@ class AudioRedactionManager(private val context: Context) {
                 when (outIndex) {
                     MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         outputFormat = codec.outputFormat
-                        // Capture the actual sample rate when format changes
                         finalSampleRate = outputFormat!!.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                     }
                     MediaCodec.INFO_TRY_AGAIN_LATER -> {}
@@ -304,8 +324,8 @@ class AudioRedactionManager(private val context: Context) {
                         val bytes = ByteArray(info.size)
                         outBuf?.get(bytes)
 
-                        val outFmt = outputFormat ?: codec.outputFormat // Use current or latest format
-                        finalSampleRate = outFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) // Ensure capture
+                        val outFmt = outputFormat ?: codec.outputFormat
+                        finalSampleRate = outFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
 
                         val channels = if (outFmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
                             outFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
@@ -319,7 +339,6 @@ class AudioRedactionManager(private val context: Context) {
                             else -> shortMono(toShortArray(bytes), channels)
                         }
 
-                        // NOTE: NO RESAMPLING HERE. We collect raw PCM data.
                         shorts.addAll(pcmChunk.toList())
 
                         codec.releaseOutputBuffer(outIndex, false)
@@ -329,7 +348,6 @@ class AudioRedactionManager(private val context: Context) {
                 }
             }
 
-            // Return the raw PCM data and the sample rate the decoder produced
             return Pair(shorts.toShortArray(), finalSampleRate)
 
         } catch (e: Exception) {
@@ -346,7 +364,6 @@ class AudioRedactionManager(private val context: Context) {
     private fun writeWav16(samples: ShortArray, sampleRate: Int, outFile: File) {
         FileOutputStream(outFile).use { fos ->
             val bytes = samples.size * 2
-            // CRITICAL: Use the actual decoded sampleRate here
             val header = makeWavHeader(bytes, sampleRate, 1, 16)
             fos.write(header)
 
@@ -355,8 +372,6 @@ class AudioRedactionManager(private val context: Context) {
             fos.write(buffer.array())
         }
     }
-
-    // --- Auxiliary functions (resampling, conversion, header creation) ---
 
     private fun makeWavHeader(dataSize: Int, sr: Int, ch: Int, bits: Int): ByteArray {
         val header = ByteArray(44)
@@ -433,7 +448,6 @@ class AudioRedactionManager(private val context: Context) {
         return out
     }
 
-    // Resampling logic (from your original code) needed by decodeAndFeedToRecognizer
     private fun resampleShortArray(input: ShortArray, inRate: Int, outRate: Int): ShortArray {
         if (inRate == outRate) return input
         val ratio = inRate.toDouble() / outRate.toDouble()

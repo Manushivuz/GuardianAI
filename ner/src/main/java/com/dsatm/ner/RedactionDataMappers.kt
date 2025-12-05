@@ -27,6 +27,10 @@ data class VoskWord(
  * @param piiEntities The list of PII entities found by NER against the *cleaned* transcript.
  * @return A list of audio mute ranges as (startMs, endMs) pairs.
  */
+// File: com.dsatm.ner/RedactionDataMappers.kt (REPLACEMENT CODE)
+
+// Note: Assuming PiiEntity and VoskWord data classes are correctly defined in scope.
+
 fun mapPiiToTimeRanges(
     rawTimestampedTranscript: String,
     piiEntities: List<PiiEntity>
@@ -34,72 +38,70 @@ fun mapPiiToTimeRanges(
     val TAG = "PiiTimeMapper"
     val ranges = mutableListOf<Pair<Long, Long>>()
 
-    // Regex to find and extract both the word and its time range
+    // Data class to track both audio time and character indices
+    data class IndexedVoskWord(
+        val word: String,
+        val startChar: Int,  // Start index in the NER's input string
+        val endChar: Int,    // End index in the NER's input string
+        val audioStart: Float,
+        val audioEnd: Float
+    )
+
     val pattern = Regex("(\\S+)\\s*\\[([\\d.]+)-([\\d.]+)\\]")
     val matches = pattern.findAll(rawTimestampedTranscript)
+    val indexedWords = mutableListOf<IndexedVoskWord>()
 
-    // A list of VoskWord objects that includes timing
-    val voskWordsWithTiming = mutableListOf<VoskWord>()
-
-    // Current char index in the CLEANED transcript (no time tags)
+    // Tracks the current index in the "cleaned" transcript (must match the NER's input)
     var currentCleanCharIndex = 0
 
-    // 1. Parse the timestamped transcript into a list of VoskWord objects
+    // --- Step 1: Parse Vosk output and build the index map ---
     for (match in matches) {
-        val (word, startStr, endStr) = match.destructured
+        val (rawWord, startStr, endStr) = match.destructured
 
-        // Remove trailing punctuation that might be included in Vosk's 'word' but not
-        // in the character span logic (e.g., 'hello. [1.0-1.5]'). A quick fix:
-        val cleanWord = word.trim().replace(Regex("[.,?!:;]"), "")
+        // CRITICAL: Must use the exact same cleaning logic as the NER model
+        val cleanWord = rawWord.trim().replace(Regex("[.,?!:;]"), "")
 
-        // Create the VoskWord object
-        val voskWord = VoskWord(
-            word = cleanWord,
-            start = startStr.toFloatOrNull() ?: continue,
-            end = endStr.toFloatOrNull() ?: continue
+        if (cleanWord.isEmpty()) continue
+
+        val startChar = currentCleanCharIndex
+        val endChar = startChar + cleanWord.length
+
+        indexedWords.add(
+            IndexedVoskWord(
+                word = cleanWord,
+                startChar = startChar,
+                endChar = endChar,
+                audioStart = startStr.toFloatOrNull() ?: continue,
+                audioEnd = endStr.toFloatOrNull() ?: continue
+            )
         )
 
-        // Log.d(TAG, "Parsed Word: $cleanWord, Timing: ${voskWord.start}-${voskWord.end}")
-        voskWordsWithTiming.add(voskWord)
+        // Advance the index: word length + 1 for the space separator between words
+        currentCleanCharIndex = endChar + 1
     }
 
-    // 2. Map PII entities (char indices) to the Vosk timing data
+    // --- Step 2: Map PII entities (char indices) using overlap check ---
     for (entity in piiEntities) {
-        var startWord: VoskWord? = null
-        var endWord: VoskWord? = null
-        currentCleanCharIndex = 0
 
-        // Iterate through the parsed Vosk words to find the word corresponding to the PII span
-        for (word in voskWordsWithTiming) {
-            val wordLength = word.word.length
-            val wordEndCharIndex = currentCleanCharIndex + wordLength
-
-            // The entity's text is the span of characters. We need the word that *contains* the entity's start index
-            // and the word that *contains* the entity's end index.
-
-            // Check for Start Word: Word starts before/at PII start AND ends after PII start.
-            if (startWord == null && currentCleanCharIndex <= entity.start && wordEndCharIndex > entity.start) {
-                startWord = word
-            }
-
-            // Check for End Word: Word starts before PII end AND ends after/at PII end.
-            if (currentCleanCharIndex < entity.end && wordEndCharIndex >= entity.end) {
-                endWord = word
-                // If we found both, we can break early since words are sequential
-                if (startWord != null) break
-            }
-
-            // Advance the index for the next word (add 1 for the space that was removed)
-            currentCleanCharIndex = wordEndCharIndex + 1
+        // Find ALL words that geometrically overlap with the PII entity span.
+        val overlappingWords = indexedWords.filter { word ->
+            // Robust Overlap Check: Captures all individual Vosk words within the long PII entity span.
+            // Word ends after entity starts AND Word starts before entity ends.
+            word.startChar < entity.end && word.endChar > entity.start
         }
 
-        if (startWord != null && endWord != null) {
-            // Use the start time of the first word and the end time of the last word in the PII phrase
-            val startMs = (startWord.start * 1000).toLong()
-            val endMs = (endWord.end * 1000).toLong()
+        if (overlappingWords.isNotEmpty()) {
+            val startWord = overlappingWords.first()
+            val endWord = overlappingWords.last()
+
+            // Use the start time of the first word and the end time of the last word
+            val startMs = (startWord.audioStart * 1000).toLong()
+            val endMs = (endWord.audioEnd * 1000).toLong()
+
             ranges.add(Pair(startMs, endMs))
             Log.d(TAG, "Mapped PII '${entity.text}' to time range: $startMs ms - $endMs ms")
         } else {
+            // This handles the error scenario more robustly.
             Log.w(TAG, "Could not map PII entity '${entity.text}' (indices ${entity.start}-${entity.end}) to Vosk timestamps.")
         }
     }
